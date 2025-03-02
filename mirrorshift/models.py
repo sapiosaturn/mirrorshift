@@ -18,7 +18,7 @@ References (papers)
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from utils import ModelConfig
+from mirrorshift.utils import ModelConfig
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0) -> torch.Tensor:
     # theta variable is base theta, 10000 in original paper
