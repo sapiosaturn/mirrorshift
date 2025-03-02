@@ -1,6 +1,9 @@
 __pycache__
 .DS_Store
-mirrorshift/runs
+runs
 mirrorshift/.DS_Store
 .venv
 .pytest_cache
+CLAUDE.md
+mirrorshift.egg-info
+
