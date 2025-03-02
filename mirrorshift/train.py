@@ -20,10 +20,10 @@ from torch.utils.data import (
 from torch.utils.tensorboard import SummaryWriter
 import time
 
-from models import CausalTransformer
-from data import TiktokenTxtDataset
-from inference import sample
-from utils import (
+from mirrorshift.models import CausalTransformer
+from mirrorshift.data import TiktokenTxtDataset
+from mirrorshift.inference import sample
+from mirrorshift.utils import (
     read_model_config,
     read_training_config,
     ModelConfig,
@@ -31,7 +31,7 @@ from utils import (
     get_lr_schedule,
     get_supported_dtype
 )
-from distributed import (
+from mirrorshift.distributed import (
     setup_distributed,
     fsdp_wrap,
     cleanup_distributed
@@ -238,20 +238,22 @@ def train(
 def is_distributed():
     return 'RANK' in os.environ or 'LOCAL_RANK' in os.environ
 
-if __name__ == '__main__':
+def main():
+    """Entry point for the mirrorshift-train command."""
     # default values are for tiny model
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--model-config', type=str, default='config/model_configs/small.json',
+    parser = argparse.ArgumentParser(description="Train a mirrorshift transformer model")
+    parser.add_argument('--model-config', type=str, default='mirrorshift/config/model_configs/small.json',
                       help='Path to model configuration file')
-    parser.add_argument('--training-config', type=str, default='config/training_configs/small.json',
+    parser.add_argument('--training-config', type=str, default='mirrorshift/config/training_configs/small.json',
                       help='Path to training configuration file')
-    parser.add_argument('--dataset', type=str, default='datasets/coqa_stories.txt',
+    parser.add_argument('--dataset', type=str, default='mirrorshift/datasets/coqa_stories.txt',
                       help='Path to training text file')
     args = parser.parse_args()
 
     model_config: ModelConfig = read_model_config(args.model_config)
     training_config: TrainingConfig = read_training_config(args.training_config)
-
+    
+    # Continue with the rest of the training process
     if is_distributed():
         setup_distributed()
 
@@ -345,3 +347,8 @@ if __name__ == '__main__':
 
     if is_distributed():
         cleanup_distributed()
+    
+    return 0
+
+if __name__ == '__main__':
+    main()
