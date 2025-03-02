@@ -9,6 +9,7 @@ import torch.distributed as dist
 import argparse
 import os
 from typing import Tuple
+from collections import deque
 from torch.utils.data import (
     DataLoader,
     DistributedSampler,
@@ -17,6 +18,7 @@ from torch.utils.data import (
     SequentialSampler
 )
 from torch.utils.tensorboard import SummaryWriter
+import time
 
 from models import CausalTransformer
 from data import TiktokenTxtDataset
@@ -132,6 +134,10 @@ def train(
         total_steps=total_steps
     )
 
+    if not is_distributed() or dist.get_rank() == 0:
+        step_times = deque(maxlen=100) # sliding window average
+        step_start_time = time.time()
+
     for e in range(training_config.num_epochs):
         if is_distributed():
             train_loader.sampler.set_epoch(e)
@@ -145,6 +151,9 @@ def train(
         running_loss: float = 0.0
 
         for i, batch in enumerate(train_loader):
+            if not is_distributed() or dist.get_rank() == 0:
+                step_start_time = time.time()
+
             x: torch.Tensor
             y: torch.Tensor
             batch: BatchType = batch
@@ -173,29 +182,38 @@ def train(
             global_step += world_size
 
             if not is_distributed() or dist.get_rank() == 0:
+                step_time = (time.time() - step_start_time) / world_size
+                step_times.append(step_time)
+
+                avg_step_time = sum(step_times) / len(step_times)
+                steps_per_second = 1.0 / avg_step_time if avg_step_time > 0 else 0
+
                 writer.add_scalar("Loss/train", loss_scalar, global_step)
                 writer.add_scalar(
                     "Perplexity/train",
                     torch.exp(torch.tensor(loss_scalar)).item(),
                     global_step
                 )
+                writer.add_scalar("Performance/seconds_per_step", avg_step_time, global_step)
+                writer.add_scalar("Performance/steps_per_second", steps_per_second, global_step)
                 running_loss += loss_scalar
 
-            if not is_distributed() or dist.get_rank() == 0:
                 if global_step % training_config.reporting_steps == 0:
-                    # just a note, dividing by world size because losses only
-                    # accumulated for logging on first GPU, so not all "steps" count
                     last_loss = running_loss / (training_config.reporting_steps/world_size)
                     last_perplexity = torch.exp(torch.tensor(last_loss)).item()
-                    print("\n╭─ Training Progress ──────────────────")
-                    print(f"│ Batch Size: {training_config.batch_size}")
-                    print(f"│ Step:       {global_step}")
-                    print(f"│ Loss:       {last_loss:.5f}")
-                    print(f"│ Perplexity: {last_perplexity:.5f}")
-                    print("╰──────────────────────────────────────")
+                    print("\n╭─ Training Progress ────────────────────────")
+                    print(f"│ Batch Size:              {training_config.batch_size}")
+                    print(f"│ Step:                    {global_step}")
+                    print(f"│ Loss:                    {last_loss:.5f}")
+                    print(f"│ Perplexity:              {last_perplexity:.5f}")
+                    print(f"│ Seconds/Step (per GPU):  {avg_step_time:.3f}")
+                    print(f"│ Steps/Second (per GPU):  {steps_per_second:.3f}")
+                    print("╰────────────────────────────────────────────")
                     running_loss = 0.0
 
             if global_step % training_config.validation_eval_steps == 0:
+                if not is_distributed() or dist.get_rank() == 0:
+                    step_times.clear()
                 val_eval(
                     model=model,
                     writer=writer,
@@ -206,6 +224,7 @@ def train(
 
             if not is_distributed() or dist.get_rank() == 0:
                 if global_step % training_config.sampling_steps == 0:
+                    step_times.clear()
                     sample_and_log(
                         model=model,
                         global_step=global_step,
