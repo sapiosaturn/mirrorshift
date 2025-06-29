@@ -27,7 +27,6 @@ from mirrorshift.utils import (
     ModelConfig,
     TrainingConfig,
     get_lr_schedule,
-    get_supported_dtype
 )
 
 BatchType = Tuple[torch.Tensor, torch.Tensor]
@@ -46,16 +45,14 @@ def sample_and_log(
     random_token = torch.randint(
         low=0, high=model_config.vocab_size, size=(1, 1)
     )
-    model_dtype = next(model.parameters()).dtype
-    with torch.autocast(device_type=device, dtype=model_dtype):
-        tokens, generated_text = sample(
-            model=model,
-            context=random_token,
-            num_tokens=sampling_length,
-            context_length=model_config.context_length,
-            device=device,
-            subset=subset
-        )
+    tokens, generated_text = sample(
+        model=model,
+        context=random_token,
+        num_tokens=sampling_length,
+        context_length=model_config.context_length,
+        device=device,
+        subset=subset
+    )
     print("\n╭─ Generated Text Sample ──────────────")
     print("│")
     for line in generated_text.split('\n'):
@@ -80,13 +77,11 @@ def val_eval(
             x, y = val_batch
             x = x.to(device)
             y = y.to(device)
-            model_dtype = next(model.parameters()).dtype
-            with torch.autocast(device_type=device, dtype=model_dtype):
-                logits = model(x)
-                loss_value = F.cross_entropy(
-                    logits.view(logits.size(0) * logits.size(1), logits.size(2)),
-                    y.view(y.size(0) * y.size(1)),
-                )
+            logits = model(x)
+            loss_value = F.cross_entropy(
+                logits.view(logits.size(0) * logits.size(1), logits.size(2)),
+                y.view(y.size(0) * y.size(1)),
+            )
             loss_scalar = loss_value.item()
             total_val_loss += loss_scalar
             val_batches += 1
@@ -151,13 +146,11 @@ def train(
 
             writer.add_scalar("Learning Rate", opt.param_groups[0]['lr'], global_step)
 
-            model_dtype = next(model.parameters()).dtype
-            with torch.autocast(device_type=device, dtype=model_dtype):
-                logits: Logits = model(x)
-                loss_value = F.cross_entropy(
-                    logits.view(logits.size(0) * logits.size(1), logits.size(2)),
-                    y.view(y.size(0) * y.size(1)),
-                )
+            logits: Logits = model(x)
+            loss_value = F.cross_entropy(
+                logits.view(logits.size(0) * logits.size(1), logits.size(2)),
+                y.view(y.size(0) * y.size(1)),
+            )
 
             loss_value.backward()
             loss_scalar = loss_value.item()
@@ -264,8 +257,7 @@ def main():
     else:
         device = training_config.device
 
-    dtype = get_supported_dtype(device)
-    model = model.to(device, dtype=dtype)
+    model = model.to(device)
 
     opt: optim.AdamW = optim.AdamW(model.parameters(), lr=training_config.learning_rate)
 
