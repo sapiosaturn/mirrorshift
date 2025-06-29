@@ -5,14 +5,12 @@ This file contains the core training logic.
 import torch
 import torch.optim as optim
 import torch.nn.functional as F
-import torch.distributed as dist
 import argparse
 import os
 from typing import Tuple
 from collections import deque
 from torch.utils.data import (
     DataLoader,
-    DistributedSampler,
     Subset,
     RandomSampler,
     SequentialSampler
@@ -30,11 +28,6 @@ from mirrorshift.utils import (
     TrainingConfig,
     get_lr_schedule,
     get_supported_dtype
-)
-from mirrorshift.distributed import (
-    setup_distributed,
-    fsdp_wrap,
-    cleanup_distributed
 )
 
 BatchType = Tuple[torch.Tensor, torch.Tensor]
@@ -97,17 +90,16 @@ def val_eval(
             loss_scalar = loss_value.item()
             total_val_loss += loss_scalar
             val_batches += 1
-    if not is_distributed() or dist.get_rank() == 0:
-        avg_val_loss = total_val_loss/val_batches
-        writer.add_scalar("Loss/val", avg_val_loss, global_step)
-        val_perplexity = torch.exp(torch.tensor(avg_val_loss)).item()
-        writer.add_scalar("Perplexity/val", val_perplexity, global_step)
+    avg_val_loss = total_val_loss/val_batches
+    writer.add_scalar("Loss/val", avg_val_loss, global_step)
+    val_perplexity = torch.exp(torch.tensor(avg_val_loss)).item()
+    writer.add_scalar("Perplexity/val", val_perplexity, global_step)
 
-        print("\n╭─ Validation Metrics ─────────────────")
-        print(f"│ Step:                  {global_step}")
-        print(f"│ Validation Loss:       {avg_val_loss:.5f}")
-        print(f"│ Validation Perplexity: {val_perplexity:.5f}")
-        print("╰──────────────────────────────────────")
+    print("\n╭─ Validation Metrics ─────────────────")
+    print(f"│ Step:                  {global_step}")
+    print(f"│ Validation Loss:       {avg_val_loss:.5f}")
+    print(f"│ Validation Perplexity: {val_perplexity:.5f}")
+    print("╰──────────────────────────────────────")
 
     model.train()
 
@@ -122,7 +114,6 @@ def train(
     writer: SummaryWriter,
 ) -> None:
     global_step: int = 0
-    world_size = dist.get_world_size() if is_distributed() else 1
 
     steps_per_epoch = len(train_loader.dataset) // training_config.batch_size
     total_steps = steps_per_epoch * training_config.num_epochs
@@ -134,25 +125,18 @@ def train(
         total_steps=total_steps
     )
 
-    if not is_distributed() or dist.get_rank() == 0:
-        step_times = deque(maxlen=100) # sliding window average
-        step_start_time = time.time()
+    step_times = deque(maxlen=100) # sliding window average
+    step_start_time = time.time()
 
     for e in range(training_config.num_epochs):
-        if is_distributed():
-            train_loader.sampler.set_epoch(e)
-            val_loader.sampler.set_epoch(e)
-
-        if not is_distributed() or dist.get_rank() == 0:
-            print("\n╭─ Starting Epoch ─────────────────────")
-            print(f"│ Epoch: {e}")
-            print("╰──────────────────────────────────────")
+        print("\n╭─ Starting Epoch ─────────────────────")
+        print(f"│ Epoch: {e}")
+        print("╰──────────────────────────────────────")
 
         running_loss: float = 0.0
 
         for i, batch in enumerate(train_loader):
-            if not is_distributed() or dist.get_rank() == 0:
-                step_start_time = time.time()
+            step_start_time = time.time()
 
             x: torch.Tensor
             y: torch.Tensor
@@ -165,8 +149,7 @@ def train(
             for param_group in opt.param_groups:
                 param_group['lr'] = lr_schedule(global_step)
 
-            if not is_distributed() or dist.get_rank() == 0:
-                writer.add_scalar("Learning Rate", opt.param_groups[0]['lr'], global_step)
+            writer.add_scalar("Learning Rate", opt.param_groups[0]['lr'], global_step)
 
             model_dtype = next(model.parameters()).dtype
             with torch.autocast(device_type=device, dtype=model_dtype):
@@ -179,41 +162,39 @@ def train(
             loss_value.backward()
             loss_scalar = loss_value.item()
             opt.step()
-            global_step += world_size
+            global_step += 1
 
-            if not is_distributed() or dist.get_rank() == 0:
-                step_time = (time.time() - step_start_time) / world_size
-                step_times.append(step_time)
+            step_time = time.time() - step_start_time
+            step_times.append(step_time)
 
-                avg_step_time = sum(step_times) / len(step_times)
-                steps_per_second = 1.0 / avg_step_time if avg_step_time > 0 else 0
+            avg_step_time = sum(step_times) / len(step_times)
+            steps_per_second = 1.0 / avg_step_time if avg_step_time > 0 else 0
 
-                writer.add_scalar("Loss/train", loss_scalar, global_step)
-                writer.add_scalar(
-                    "Perplexity/train",
-                    torch.exp(torch.tensor(loss_scalar)).item(),
-                    global_step
-                )
-                writer.add_scalar("Performance/seconds_per_step", avg_step_time, global_step)
-                writer.add_scalar("Performance/steps_per_second", steps_per_second, global_step)
-                running_loss += loss_scalar
+            writer.add_scalar("Loss/train", loss_scalar, global_step)
+            writer.add_scalar(
+                "Perplexity/train",
+                torch.exp(torch.tensor(loss_scalar)).item(),
+                global_step
+            )
+            writer.add_scalar("Performance/seconds_per_step", avg_step_time, global_step)
+            writer.add_scalar("Performance/steps_per_second", steps_per_second, global_step)
+            running_loss += loss_scalar
 
-                if global_step % training_config.reporting_steps == 0:
-                    last_loss = running_loss / (training_config.reporting_steps/world_size)
-                    last_perplexity = torch.exp(torch.tensor(last_loss)).item()
-                    print("\n╭─ Training Progress ────────────────────────")
-                    print(f"│ Batch Size:              {training_config.batch_size}")
-                    print(f"│ Step:                    {global_step}")
-                    print(f"│ Loss:                    {last_loss:.5f}")
-                    print(f"│ Perplexity:              {last_perplexity:.5f}")
-                    print(f"│ Seconds/Step (per GPU):  {avg_step_time:.3f}")
-                    print(f"│ Steps/Second (per GPU):  {steps_per_second:.3f}")
-                    print("╰────────────────────────────────────────────")
-                    running_loss = 0.0
+            if global_step % training_config.reporting_steps == 0:
+                last_loss = running_loss / training_config.reporting_steps
+                last_perplexity = torch.exp(torch.tensor(last_loss)).item()
+                print("\n╭─ Training Progress ────────────────────────")
+                print(f"│ Batch Size:              {training_config.batch_size}")
+                print(f"│ Step:                    {global_step}")
+                print(f"│ Loss:                    {last_loss:.5f}")
+                print(f"│ Perplexity:              {last_perplexity:.5f}")
+                print(f"│ Seconds/Step (per GPU):  {avg_step_time:.3f}")
+                print(f"│ Steps/Second (per GPU):  {steps_per_second:.3f}")
+                print("╰────────────────────────────────────────────")
+                running_loss = 0.0
 
             if global_step % training_config.validation_eval_steps == 0:
-                if not is_distributed() or dist.get_rank() == 0:
-                    step_times.clear()
+                step_times.clear()
                 val_eval(
                     model=model,
                     writer=writer,
@@ -222,21 +203,17 @@ def train(
                     device=device
                 )
 
-            if not is_distributed() or dist.get_rank() == 0:
-                if global_step % training_config.sampling_steps == 0:
-                    step_times.clear()
-                    sample_and_log(
-                        model=model,
-                        global_step=global_step,
-                        writer=writer,
-                        device=device,
-                        subset=train_loader.dataset,
-                        model_config=model_config,
-                        sampling_length=training_config.sampling_length_multiplier * model_config.context_length
-                    )
-
-def is_distributed():
-    return 'RANK' in os.environ or 'LOCAL_RANK' in os.environ
+            if global_step % training_config.sampling_steps == 0:
+                step_times.clear()
+                sample_and_log(
+                    model=model,
+                    global_step=global_step,
+                    writer=writer,
+                    device=device,
+                    subset=train_loader.dataset,
+                    model_config=model_config,
+                    sampling_length=training_config.sampling_length_multiplier * model_config.context_length
+                )
 
 def main():
     """Entry point for the mirrorshift-train command."""
@@ -254,12 +231,7 @@ def main():
     training_config: TrainingConfig = read_training_config(args.training_config)
     
     # Continue with the rest of the training process
-    if is_distributed():
-        setup_distributed()
-
-    writer: SummaryWriter = None
-    if not is_distributed() or dist.get_rank() == 0:
-        writer = SummaryWriter()
+    writer: SummaryWriter = SummaryWriter()
 
     full_dataset: TiktokenTxtDataset = TiktokenTxtDataset(
         args.dataset, model_config.context_length
@@ -279,8 +251,6 @@ def main():
     )
 
     model = CausalTransformer(model_config=model_config)
-    if is_distributed():
-        model = fsdp_wrap(model)
 
     device: str
     if training_config.device == "auto":
@@ -295,21 +265,18 @@ def main():
         device = training_config.device
 
     dtype = get_supported_dtype(device)
-    if not is_distributed():
-        model = model.to(device, dtype=dtype)
+    model = model.to(device, dtype=dtype)
 
     opt: optim.AdamW = optim.AdamW(model.parameters(), lr=training_config.learning_rate)
 
     if training_config.compile:
         if device == "mps":
             print("INFO: torch.compile not compatible with device mps, choosing not to compile")
-        elif device == "cuda" and is_distributed():
-            print("INFO: torch.compile not working with multiple GPUs here yet, choosing not to compile")
         else:
             model = torch.compile(model)
 
-    train_sampler = DistributedSampler(train_dataset) if is_distributed() else RandomSampler(train_dataset)
-    val_sampler = DistributedSampler(val_dataset) if is_distributed() else SequentialSampler(val_dataset)
+    train_sampler = RandomSampler(train_dataset)
+    val_sampler = SequentialSampler(val_dataset)
     train_loader: DataLoader = DataLoader(
         train_dataset,
         batch_size=training_config.batch_size,
@@ -321,15 +288,14 @@ def main():
         sampler=val_sampler
     )
 
-    if not is_distributed() or dist.get_rank() == 0:
-        trainable_params: int = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        print("\n╭─ Training Info ──────────────────────")
-        print(f"│ Total dataset size:   {len(full_dataset)}")
-        print(f"│ Trainable parameters: {trainable_params}")
-        print(f"│ Training set size:    {len(train_dataset)}")
-        print(f"│ Training on device:   {device}")
-        print(f"│ Validation set size:  {len(val_dataset)}")
-        print(  "╰──────────────────────────────────────")
+    trainable_params: int = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print("\n╭─ Training Info ──────────────────────")
+    print(f"│ Total dataset size:   {len(full_dataset)}")
+    print(f"│ Trainable parameters: {trainable_params}")
+    print(f"│ Training set size:    {len(train_dataset)}")
+    print(f"│ Training on device:   {device}")
+    print(f"│ Validation set size:  {len(val_dataset)}")
+    print(  "╰──────────────────────────────────────")
 
     train(
         model=model,
@@ -342,11 +308,7 @@ def main():
         writer=writer,
     )
 
-    if not is_distributed() or dist.get_rank() == 0:
-        writer.flush()
-
-    if is_distributed():
-        cleanup_distributed()
+    writer.flush()
     
     return 0
 
