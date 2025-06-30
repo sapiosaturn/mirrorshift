@@ -1,35 +1,7 @@
-"""
-This file contains the model definitions.
-
-References (code):
-- https://github.com/karpathy/minGPT
-- https://pytorch.org/docs/stable/generated/torch.nn.MultiheadAttention.html
-- https://pytorch.org/tutorials/beginner/translation_transformer.html
-- https://cameronrwolfe.substack.com/p/decoder-only-transformers-the-workhorse
-- https://github.com/meta-llama/llama-models/blob/main/models/llama3/reference_impl/model.py#L90 (for RoPE)
-
-References (papers)
-- Attention is all you need: https://arxiv.org/pdf/1706.03762
-- DeepSeek-V2: https://arxiv.org/pdf/2405.04434
-- GQA: https://arxiv.org/pdf/2305.13245
-
-"""
-
 import torch
 import torch.nn as nn
-from torch.nn import functional as F
+import torch.nn.functional as F
 from mirrorshift.utils import ModelConfig
-
-def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0) -> torch.Tensor:
-    # theta variable is base theta, 10000 in original paper
-    # theta ^ -2(i-1)/d
-    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
-    t = torch.arange(end)
-    freqs = torch.outer(t, freqs)
-    # imo more readable than ones_like
-    freqs_cis = torch.polar(torch.ones(freqs.size()), freqs)
-    # output dimensions are (end, dim//2)
-    return freqs_cis
 
 class GroupedQueryAttention(nn.Module):
     # for grouped query attention, many queries are grouped together with a single key and value matrix
@@ -39,8 +11,6 @@ class GroupedQueryAttention(nn.Module):
         num_heads: int,
         num_kv_heads: int,
         context_length: int,
-        attention_dropout_p: float,
-        residual_dropout_p: float
     ):
         super().__init__()
         assert embedding_dim % num_heads == 0
@@ -62,9 +32,6 @@ class GroupedQueryAttention(nn.Module):
         )
         self.output_proj = nn.Linear(embedding_dim, embedding_dim, bias=False)
         nn.init.zeros_(self.output_proj.weight)
-
-        self.attention_dropout_p = attention_dropout_p
-        self.residual_dropout = nn.Dropout(p=residual_dropout_p)
 
     def apply_rope(self, x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
         batch_size, seq_length, num_heads, per_head_dim = x.size()
@@ -106,7 +73,7 @@ class GroupedQueryAttention(nn.Module):
             query=Q,
             key=K,
             value=V,
-            dropout_p=self.attention_dropout_p,
+            dropout_p=0.0,
             is_causal=True,
             enable_gqa=True,
         )
@@ -118,9 +85,8 @@ class GroupedQueryAttention(nn.Module):
             .view(batch_size, seq_length, self.embedding_dim)
         )
         output = self.output_proj(output)
-        output = self.residual_dropout(output)
         return output
-
+    
 class MultiHeadLatentAttention(nn.Module):
     # for MLA, queries, keys, and values are all projected down to a low-rank latent tensor
     # before being up-projected for the attention mechanism
@@ -139,8 +105,6 @@ class MultiHeadLatentAttention(nn.Module):
         qk_rope_head_dim: int,
         v_head_dim: int,
         context_length: int,
-        attention_dropout_p: float,
-        residual_dropout_p: float,
     ):
         super().__init__()
         assert embedding_dim % num_heads == 0
@@ -182,9 +146,6 @@ class MultiHeadLatentAttention(nn.Module):
         )
         nn.init.zeros_(self.output_proj.weight)
 
-        self.attention_dropout_p = attention_dropout_p
-        self.residual_dropout = nn.Dropout(p=residual_dropout_p)
-
     def apply_rope(self, x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
         batch_size, seq_length, num_heads, per_head_dim = x.size()
         # reshaping does the "division into d/2" subspaces
@@ -204,16 +165,16 @@ class MultiHeadLatentAttention(nn.Module):
 
     def forward(self, x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
         batch_size, seq_length, _ = x.size()
-        Q = self.Q_a(x)
-        Q = F.rms_norm(Q, (Q.size(-1),))  # low rank is normalized
-        Q = self.Q_b(Q)
+        q = self.Q_a(x)
+        q = F.rms_norm(q, (q.size(-1),))  # low rank is normalized
+        q = self.Q_b(q)
 
-        Q = Q.view(batch_size, seq_length, self.num_heads, self.qk_head_dim)
-        Q_nope, Q_rope = torch.split(
-            Q, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1
+        q = q.view(batch_size, seq_length, self.num_heads, self.qk_head_dim)
+        q_nope, q_rope = torch.split(
+            q, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1
         )
-        Q_rope = self.apply_rope(Q_rope, freqs_cis)
-        Q = torch.cat([Q_nope, Q_rope], dim=-1).transpose(1, 2)
+        q_rope = self.apply_rope(q_rope, freqs_cis)
+        q = torch.cat([q_nope, q_rope], dim=-1).transpose(1, 2)
 
         # for keys, we want the up-projection for rope to be decoupled
         # since rope is position-sensitive, we can't cache rope-d keys
@@ -242,10 +203,10 @@ class MultiHeadLatentAttention(nn.Module):
         k = torch.cat([k_nope, k_rope], dim=-1)
 
         output = F.scaled_dot_product_attention(
-            query=Q,
+            query=q,
             key=k,
             value=v,
-            dropout_p=self.attention_dropout_p,
+            dropout_p=0.0,
             is_causal=True,
             enable_gqa=True,
         )
@@ -257,105 +218,28 @@ class MultiHeadLatentAttention(nn.Module):
             .view(batch_size, seq_length, self.num_heads * self.v_head_dim)
         )
         output = self.output_proj(output)
-        output = self.residual_dropout(output)
         return output
+    
 
-class MLP(nn.Module):
-    # position-wise FF layer
-    def __init__(self, model_dim: int, feedforward_dim: int):
-        super().__init__()
-        self.to_hidden = nn.Linear(model_dim, feedforward_dim, bias=False)
-        self.from_hidden = nn.Linear(feedforward_dim, model_dim, bias=False)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # dimensions of x are batch_size, seq_length, embedding_dim
-        # which is also batch_size, seq_length, model_dim
-        return self.from_hidden(F.relu(self.to_hidden(x)).square())
-
-class DecoderBlock(nn.Module):
-    def __init__(
-        self,
-        model_config: ModelConfig
-    ):
-        super().__init__()
-        if model_config.attention_type == "gqa":
-            self.attention_block = GroupedQueryAttention(
+def build_attention_block(model_config: ModelConfig) -> nn.Module:
+    if model_config.attention_type == "gqa":
+        return GroupedQueryAttention(
             embedding_dim=model_config.embedding_dim,
             num_heads=model_config.num_heads,
             num_kv_heads=model_config.num_kv_heads,
             context_length=model_config.context_length,
-            attention_dropout_p=model_config.attention_dropout_p,
-            residual_dropout_p=model_config.residual_dropout_p,
-            )
-        elif model_config.attention_type == 'mla':
-            self.attention_block = MultiHeadLatentAttention(
-                embedding_dim=model_config.embedding_dim,
-                num_heads=model_config.num_heads,
-                num_kv_heads=model_config.num_kv_heads,
-                q_lora_rank=model_config.q_lora_rank,
-                kv_lora_rank=model_config.kv_lora_rank,
-                qk_nope_head_dim=model_config.qk_nope_head_dim,
-                qk_rope_head_dim=model_config.qk_rope_head_dim,
-                v_head_dim=model_config.v_head_dim,
-                context_length=model_config.context_length,
-                attention_dropout_p=model_config.attention_dropout_p,
-                residual_dropout_p=model_config.residual_dropout_p,
-            )
-        else:
-            raise ValueError(f"Unknown attention type: {model_config.attention_type}")
-        self.ff_block = MLP(
-            model_dim=model_config.embedding_dim, feedforward_dim=model_config.feedforward_dim
         )
-
-    def forward(self, x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
-        # should be straightforward, dimensions stay the same
-        output = F.rms_norm(x, (x.size(-1),))  # last dim is embedding_dim
-        output = output + self.attention_block(output, freqs_cis)
-        output = F.rms_norm(output, (output.size(-1),))  # last dim is embedding_dim
-        output = output + self.ff_block(output)
-        return output
-
-class CausalTransformer(nn.Module):
-    def __init__(
-        self,
-        model_config: ModelConfig
-    ):
-        # vocab size is equal for input and output
-        super().__init__()
-        self.embedding_layer = nn.Embedding(model_config.vocab_size, model_config.embedding_dim)
-        if model_config.attention_type == 'gqa':
-            freqs_cis = precompute_freqs_cis(model_config.embedding_dim // model_config.num_heads, model_config.context_length)
-        elif model_config.attention_type == 'mla':
-            freqs_cis = precompute_freqs_cis(model_config.qk_rope_head_dim, model_config.context_length)
-        else:
-            raise ValueError(f"Unknown attention type: {model_config.attention_type}")
-        self.register_buffer("freqs_cis", freqs_cis)
-
-        self.decoder_stack = nn.ModuleList(
-            [
-                DecoderBlock(model_config = model_config)
-                for _ in range(model_config.num_layers)
-            ]
+    elif model_config.attention_type == 'mla':
+        return MultiHeadLatentAttention(
+            embedding_dim=model_config.embedding_dim,
+            num_heads=model_config.num_heads,
+            num_kv_heads=model_config.num_kv_heads,
+            q_lora_rank=model_config.q_lora_rank,
+            kv_lora_rank=model_config.kv_lora_rank,
+            qk_nope_head_dim=model_config.qk_nope_head_dim,
+            qk_rope_head_dim=model_config.qk_rope_head_dim,
+            v_head_dim=model_config.v_head_dim,
+            context_length=model_config.context_length,
         )
-        self.lm_head = nn.Linear(model_config.embedding_dim, model_config.vocab_size, bias=False)
-        nn.init.zeros_(self.lm_head.weight)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x is batch size, seq_len where each value is a token index
-        output = self.embedding_layer(x)
-        output = F.rms_norm(output, (output.size(-1),))
-        for layer in self.decoder_stack:
-            output = layer(output, self.freqs_cis)
-        output = F.rms_norm(output, (output.size(-1),))
-        output = self.lm_head(output)
-        return output
-
-    def to(self, *args, **kwargs):
-        # this override is used to make sure freqs_cis, which is complex,
-        # does not get cast to bf16
-        freqs_cis = self.freqs_cis
-        self._buffers.pop('freqs_cis')
-        model = super().to(*args, **kwargs)
-        device = next(self.parameters()).device
-        self.register_buffer("freqs_cis", freqs_cis.to(device))
-        return model
+    else:
+        raise ValueError(f"Unknown attention type: {model_config.attention_type}")

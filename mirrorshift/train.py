@@ -18,7 +18,7 @@ from torch.utils.data import (
 from torch.utils.tensorboard import SummaryWriter
 import time
 
-from mirrorshift.models import CausalTransformer
+from mirrorshift.modeling.causal_transformers import CausalTransformer
 from mirrorshift.data import TiktokenTxtDataset
 from mirrorshift.inference import sample
 from mirrorshift.utils import (
