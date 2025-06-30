@@ -13,10 +13,13 @@ from mirrorshift.modeling.causal_transformers import (
 )
 from mirrorshift.utils import ModelConfig, TrainingConfig
 from mirrorshift.inference import sample
+from mirrorshift.logging_and_metrics import RichLogger
 
 # Make these modules available for import
 __all__ = [
     "CausalTransformer",
     "ModelConfig",
     "TrainingConfig",
+    "RichLogger",
+    "sample",
 ]

@@ -21,6 +21,7 @@ import time
 from mirrorshift.modeling.causal_transformers import CausalTransformer
 from mirrorshift.data import TiktokenTxtDataset
 from mirrorshift.inference import sample
+from mirrorshift.logging_and_metrics import RichLogger
 from mirrorshift.utils import (
     read_model_config,
     read_training_config,
@@ -32,6 +33,7 @@ from mirrorshift.utils import (
 BatchType = Tuple[torch.Tensor, torch.Tensor]
 Logits = torch.Tensor
 
+
 def sample_and_log(
     model: CausalTransformer,
     global_step: int,
@@ -39,7 +41,8 @@ def sample_and_log(
     device: str,
     subset: Subset,
     model_config: ModelConfig,
-    sampling_length: int
+    sampling_length: int,
+    rich_logger: 'RichLogger' = None
 ) -> None:
     model.eval()
     random_token = torch.randint(
@@ -53,12 +56,9 @@ def sample_and_log(
         device=device,
         subset=subset
     )
-    print("\n╭─ Generated Text Sample ──────────────")
-    print("│")
-    for line in generated_text.split('\n'):
-        print(f"│ {line}")
-    print("│")
-    print("╰──────────────────────────────────────")
+    
+    rich_logger.update_generation(generated_text, global_step)
+    
     writer.add_text("Sampled Text", generated_text, global_step)
     model.train()
 
@@ -68,7 +68,9 @@ def val_eval(
     global_step: int,
     val_loader: DataLoader,
     device: str,
-) -> None:
+    rich_logger: 'RichLogger' = None,
+    best_val_loss: float = None
+) -> float:
     model.eval()
     total_val_loss = 0.0
     val_batches = 0
@@ -90,13 +92,10 @@ def val_eval(
     val_perplexity = torch.exp(torch.tensor(avg_val_loss)).item()
     writer.add_scalar("Perplexity/val", val_perplexity, global_step)
 
-    print("\n╭─ Validation Metrics ─────────────────")
-    print(f"│ Step:                  {global_step}")
-    print(f"│ Validation Loss:       {avg_val_loss:.5f}")
-    print(f"│ Validation Perplexity: {val_perplexity:.5f}")
-    print("╰──────────────────────────────────────")
+    rich_logger.update_validation(global_step, avg_val_loss, val_perplexity, best_val_loss)
 
     model.train()
+    return avg_val_loss
 
 def train(
     model: CausalTransformer,
@@ -122,91 +121,104 @@ def train(
 
     step_times = deque(maxlen=100) # sliding window average
     step_start_time = time.time()
+    best_val_loss = float('inf')
 
-    for e in range(training_config.num_epochs):
-        print("\n╭─ Starting Epoch ─────────────────────")
-        print(f"│ Epoch: {e}")
-        print("╰──────────────────────────────────────")
+    # Initialize the RichLogger
+    rich_logger = RichLogger(total_steps=total_steps, batch_size=training_config.batch_size)
 
-        running_loss: float = 0.0
+    with rich_logger:
+        for e in range(training_config.num_epochs):
+            rich_logger.print_epoch_start(e)
 
-        for i, batch in enumerate(train_loader):
-            step_start_time = time.time()
+            running_loss: float = 0.0
 
-            x: torch.Tensor
-            y: torch.Tensor
-            batch: BatchType = batch
-            x, y = batch
-            x = x.to(device)
-            y = y.to(device)
-            opt.zero_grad()
+            for i, batch in enumerate(train_loader):
+                step_start_time = time.time()
 
-            for param_group in opt.param_groups:
-                param_group['lr'] = lr_schedule(global_step)
+                x: torch.Tensor
+                y: torch.Tensor
+                batch: BatchType = batch
+                x, y = batch
+                x = x.to(device)
+                y = y.to(device)
+                opt.zero_grad()
 
-            writer.add_scalar("Learning Rate", opt.param_groups[0]['lr'], global_step)
+                for param_group in opt.param_groups:
+                    param_group['lr'] = lr_schedule(global_step)
 
-            logits: Logits = model(x)
-            loss_value = F.cross_entropy(
-                logits.view(logits.size(0) * logits.size(1), logits.size(2)),
-                y.view(y.size(0) * y.size(1)),
-            )
+                writer.add_scalar("Learning Rate", opt.param_groups[0]['lr'], global_step)
 
-            loss_value.backward()
-            loss_scalar = loss_value.item()
-            opt.step()
-            global_step += 1
-
-            step_time = time.time() - step_start_time
-            step_times.append(step_time)
-
-            avg_step_time = sum(step_times) / len(step_times)
-            steps_per_second = 1.0 / avg_step_time if avg_step_time > 0 else 0
-
-            writer.add_scalar("Loss/train", loss_scalar, global_step)
-            writer.add_scalar(
-                "Perplexity/train",
-                torch.exp(torch.tensor(loss_scalar)).item(),
-                global_step
-            )
-            writer.add_scalar("Performance/seconds_per_step", avg_step_time, global_step)
-            writer.add_scalar("Performance/steps_per_second", steps_per_second, global_step)
-            running_loss += loss_scalar
-
-            if global_step % training_config.reporting_steps == 0:
-                last_loss = running_loss / training_config.reporting_steps
-                last_perplexity = torch.exp(torch.tensor(last_loss)).item()
-                print("\n╭─ Training Progress ────────────────────────")
-                print(f"│ Batch Size:              {training_config.batch_size}")
-                print(f"│ Step:                    {global_step}")
-                print(f"│ Loss:                    {last_loss:.5f}")
-                print(f"│ Perplexity:              {last_perplexity:.5f}")
-                print(f"│ Seconds/Step (per GPU):  {avg_step_time:.3f}")
-                print(f"│ Steps/Second (per GPU):  {steps_per_second:.3f}")
-                print("╰────────────────────────────────────────────")
-                running_loss = 0.0
-
-            if global_step % training_config.validation_eval_steps == 0:
-                step_times.clear()
-                val_eval(
-                    model=model,
-                    writer=writer,
-                    global_step=global_step,
-                    val_loader=val_loader,
-                    device=device
+                logits: Logits = model(x)
+                loss_value = F.cross_entropy(
+                    logits.view(logits.size(0) * logits.size(1), logits.size(2)),
+                    y.view(y.size(0) * y.size(1)),
                 )
 
-            if global_step % training_config.sampling_steps == 0:
-                step_times.clear()
-                sample_and_log(
-                    model=model,
-                    global_step=global_step,
-                    writer=writer,
-                    device=device,
-                    subset=train_loader.dataset,
-                    model_config=model_config,
-                    sampling_length=training_config.sampling_length_multiplier * model_config.context_length
+                loss_value.backward()
+                loss_scalar = loss_value.item()
+                opt.step()
+                global_step += 1
+
+                step_time = time.time() - step_start_time
+                step_times.append(step_time)
+
+                avg_step_time = sum(step_times) / len(step_times)
+                steps_per_second = 1.0 / avg_step_time if avg_step_time > 0 else 0
+
+                writer.add_scalar("Loss/train", loss_scalar, global_step)
+                writer.add_scalar(
+                    "Perplexity/train",
+                    torch.exp(torch.tensor(loss_scalar)).item(),
+                    global_step
                 )
+                writer.add_scalar("Performance/seconds_per_step", avg_step_time, global_step)
+                writer.add_scalar("Performance/steps_per_second", steps_per_second, global_step)
+                running_loss += loss_scalar
+
+                # Update the live table more frequently than just on reporting steps
+                if global_step % max(1, training_config.reporting_steps // 10) == 0:
+                    last_loss = running_loss / max(1, global_step % training_config.reporting_steps or training_config.reporting_steps)
+                    last_perplexity = torch.exp(torch.tensor(last_loss)).item()
+                    
+                    rich_logger.update_progress(
+                        epoch=e,
+                        step=global_step,
+                        loss=last_loss,
+                        perplexity=last_perplexity,
+                        learning_rate=opt.param_groups[0]['lr'],
+                        avg_step_time=avg_step_time,
+                        steps_per_second=steps_per_second
+                    )
+
+                if global_step % training_config.reporting_steps == 0:
+                    running_loss = 0.0
+
+                if global_step % training_config.validation_eval_steps == 0:
+                    step_times.clear()
+                    val_loss = val_eval(
+                        model=model,
+                        writer=writer,
+                        global_step=global_step,
+                        val_loader=val_loader,
+                        device=device,
+                        rich_logger=rich_logger,
+                        best_val_loss=best_val_loss
+                    )
+                    if val_loss < best_val_loss:
+                        best_val_loss = val_loss
+
+                if global_step % training_config.sampling_steps == 0:
+                    step_times.clear()
+                    sample_and_log(
+                        model=model,
+                        global_step=global_step,
+                        writer=writer,
+                        device=device,
+                        subset=train_loader.dataset,
+                        model_config=model_config,
+                        sampling_length=training_config.sampling_length_multiplier * model_config.context_length,
+                        rich_logger=rich_logger
+                    )
 
 def main():
     """Entry point for the mirrorshift-train command."""
@@ -250,8 +262,6 @@ def main():
         if torch.cuda.is_available():
             device = "cuda"
             torch.set_float32_matmul_precision("high")
-        elif torch.backends.mps.is_available():
-            device = "mps"
         else:
             device = "cpu"
     else:
@@ -261,11 +271,7 @@ def main():
 
     opt: optim.AdamW = optim.AdamW(model.parameters(), lr=training_config.learning_rate)
 
-    if training_config.compile:
-        if device == "mps":
-            print("INFO: torch.compile not compatible with device mps, choosing not to compile")
-        else:
-            model = torch.compile(model)
+    model = torch.compile(model)
 
     train_sampler = RandomSampler(train_dataset)
     val_sampler = SequentialSampler(val_dataset)

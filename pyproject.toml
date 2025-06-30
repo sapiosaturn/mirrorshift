@@ -6,32 +6,16 @@ build-backend = "setuptools.build_meta"
 name = "mirrorshift"
 version = "0.1.0"
 description = "my personal repo for transformers implementations and experiments"
-readme = "README.md"
-authors = [
-    {name = "Varun Singh", email = "23416001+sapiosaturn@users.noreply.github.com"}
-]
 requires-python = ">=3.11"
-license = {text = "MIT"}
-classifiers = [
-    "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
-    "Topic :: Scientific/Engineering :: Artificial Intelligence",
-    "Intended Audience :: Developers",
-    "Intended Audience :: Science/Research"
-]
 dependencies = [
-    "torch>=2.5.1", 
-    "tensorboard>=2.18.0", 
-    "tiktoken>=0.8.0"
+    "torch==2.7.1",
+    "tensorboard>=2.18.0",
+    "tiktoken>=0.8.0",
+    "rich>=14.0.0",
 ]
 
 [dependency-groups]
 dev = ["pytest>=8.3.4"]
-
-[project.urls]
-"Homepage" = "https://github.com/sapiosaturn/mirrorshift"
-"Bug Tracker" = "https://github.com/sapiosaturn/mirrorshift/issues"
 
 [tool.setuptools]
 packages = ["mirrorshift"]
