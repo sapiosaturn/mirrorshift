@@ -14,9 +14,6 @@ dependencies = [
     "rich>=14.0.0",
 ]
 
-[dependency-groups]
-dev = ["pytest>=8.3.4"]
-
 [tool.setuptools]
 packages = ["mirrorshift"]
 
