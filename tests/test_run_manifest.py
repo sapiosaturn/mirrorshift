@@ -51,7 +51,7 @@ def test_write_run_manifest_is_immutable(tmp_path) -> None:
     assert manifest["trainable_params"] == 456
     assert manifest["device"] == "cpu"
     assert manifest["wandb_project"] == "mirrorshift"
-    assert manifest["wandb_mode"] == "offline"
+    assert manifest["wandb_mode"] == "online"
 
     with pytest.raises(FileExistsError):
         write_run_manifest(

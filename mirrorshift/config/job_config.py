@@ -29,7 +29,7 @@ class Run:
     id: str | None = None
     wandb_project: str = "mirrorshift"
     wandb_entity: str | None = None
-    wandb_mode: Literal["online", "offline", "disabled"] = "offline"
+    wandb_mode: Literal["online", "offline", "disabled"] = "online"
     manifest_file: str = "manifest.json"
     config_snapshot_file: str = "config.json"
 

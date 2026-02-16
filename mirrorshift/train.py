@@ -16,7 +16,7 @@ from mirrorshift.config import (
     JobConfig,
     TrainingConfig,
 )
-from mirrorshift.metrics import MetricsLogger, WandBLogger
+from mirrorshift.metrics import MetricsLogger, build_metrics_logger
 from mirrorshift.run_manifest import create_run_artifacts, write_run_manifest
 from mirrorshift.utils import get_lr_schedule
 
@@ -150,7 +150,7 @@ def main() -> int:
         model = torch.compile(model)
 
     opt = optim.AdamW(model.parameters(), lr=config.training.learning_rate)
-    metrics_logger = WandBLogger(
+    metrics_logger = build_metrics_logger(
         config=config,
         run_id=artifacts.run_id,
         run_dir=artifacts.run_dir,

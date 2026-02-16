@@ -1,5 +1,6 @@
 """Metrics logging backends."""
 
+import os
 from pathlib import Path
 from typing import Protocol
 
@@ -12,6 +13,14 @@ class MetricsLogger(Protocol):
 
     def close(self) -> None:
         ...
+
+
+class NoOpLogger:
+    def log(self, metrics: dict[str, float], step: int) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
 
 
 class WandBLogger:
@@ -33,3 +42,11 @@ class WandBLogger:
     def close(self) -> None:
         self._run.finish()
 
+
+def build_metrics_logger(config: JobConfig, run_id: str, run_dir: Path) -> MetricsLogger:
+    # Never emit W&B data during pytest runs, even if run.wandb_mode=online.
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        return NoOpLogger()
+    if config.run.wandb_mode == "disabled":
+        return NoOpLogger()
+    return WandBLogger(config=config, run_id=run_id, run_dir=run_dir)
