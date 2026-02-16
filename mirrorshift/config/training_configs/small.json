@@ -1,14 +1,10 @@
 {
-  "device": "auto",
+  "device": "cpu",
   "batch_size": 16,
   "learning_rate": 5e-4,
-  "lr_warmup_steps": 250,
+  "lr_warmup_steps": 50,
   "lr_schedule": "wsd_exponential",
-  "num_epochs": 1,
-  "compile": true,
-  "reporting_steps": 100,
-  "sampling_steps": 500,
-  "sampling_length_multiplier": 2,
-  "validation_split": 0.001,
-  "validation_eval_steps": 500
+  "max_steps": 500,
+  "compile": false,
+  "log_every": 25
 }

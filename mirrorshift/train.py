@@ -1,314 +1,217 @@
-"""
-This file contains the core training logic.
-"""
+"""Step-based training entrypoint."""
+
+import argparse
+import json
+import logging
+import math
+import time
+from collections import deque
+from typing import Callable, Iterator, Tuple
 
 import torch
 import torch.optim as optim
-import torch.nn.functional as F
-import argparse
-import os
-from typing import Tuple
-from collections import deque
-from torch.utils.data import (
-    DataLoader,
-    Subset,
-    RandomSampler,
-    SequentialSampler
-)
+from torch.utils.data import DataLoader, RandomSampler
 from torch.utils.tensorboard import SummaryWriter
-import time
 
-from mirrorshift.modeling.causal_transformers import CausalTransformer
-from mirrorshift.data import TiktokenTxtDataset
-from mirrorshift.inference import sample
-from mirrorshift.logging_and_metrics import RichLogger
+from mirrorshift.experiments import get_train_spec, list_train_specs
 from mirrorshift.utils import (
+    TrainingConfig,
+    config_to_dict,
+    get_lr_schedule,
     read_model_config,
     read_training_config,
-    ModelConfig,
-    TrainingConfig,
-    get_lr_schedule,
 )
 
 BatchType = Tuple[torch.Tensor, torch.Tensor]
-Logits = torch.Tensor
+LossFunction = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
+
+LOGGER = logging.getLogger("mirrorshift.train")
 
 
-def sample_and_log(
-    model: CausalTransformer,
-    global_step: int,
-    writer: SummaryWriter,
-    device: str,
-    subset: Subset,
-    model_config: ModelConfig,
-    sampling_length: int,
-    rich_logger: 'RichLogger' = None
-) -> None:
-    model.eval()
-    random_token = torch.randint(
-        low=0, high=model_config.vocab_size, size=(1, 1)
-    )
-    tokens, generated_text = sample(
-        model=model,
-        context=random_token,
-        num_tokens=sampling_length,
-        context_length=model_config.context_length,
-        device=device,
-        subset=subset
-    )
-    
-    rich_logger.update_generation(generated_text, global_step)
-    
-    writer.add_text("Sampled Text", generated_text, global_step)
-    model.train()
+def resolve_device(device_name: str) -> str:
+    if device_name == "cpu":
+        return "cpu"
+    if device_name == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA device requested but torch.cuda.is_available() is False")
+        torch.set_float32_matmul_precision("high")
+        return "cuda"
+    raise ValueError("training_config.device must be 'cpu' or 'cuda'")
 
-def val_eval(
-    model: CausalTransformer,
-    writer: SummaryWriter,
-    global_step: int,
-    val_loader: DataLoader,
-    device: str,
-    rich_logger: 'RichLogger' = None,
-    best_val_loss: float = None
-) -> float:
-    model.eval()
-    total_val_loss = 0.0
-    val_batches = 0
-    with torch.no_grad():
-        for val_batch in val_loader:
-            x, y = val_batch
-            x = x.to(device)
-            y = y.to(device)
-            logits = model(x)
-            loss_value = F.cross_entropy(
-                logits.view(logits.size(0) * logits.size(1), logits.size(2)),
-                y.view(y.size(0) * y.size(1)),
-            )
-            loss_scalar = loss_value.item()
-            total_val_loss += loss_scalar
-            val_batches += 1
-    avg_val_loss = total_val_loss/val_batches
-    writer.add_scalar("Loss/val", avg_val_loss, global_step)
-    val_perplexity = torch.exp(torch.tensor(avg_val_loss)).item()
-    writer.add_scalar("Perplexity/val", val_perplexity, global_step)
 
-    rich_logger.update_validation(global_step, avg_val_loss, val_perplexity, best_val_loss)
+def iter_batches(train_loader: DataLoader) -> Iterator[BatchType]:
+    while True:
+        for batch in train_loader:
+            yield batch
 
-    model.train()
-    return avg_val_loss
 
 def train(
-    model: CausalTransformer,
+    model: torch.nn.Module,
     train_loader: DataLoader,
-    val_loader: DataLoader,
     opt: optim.AdamW,
+    loss_fn: LossFunction,
     device: str,
     training_config: TrainingConfig,
-    model_config: ModelConfig,
     writer: SummaryWriter,
-) -> None:
-    global_step: int = 0
-
-    steps_per_epoch = len(train_loader.dataset) // training_config.batch_size
-    total_steps = steps_per_epoch * training_config.num_epochs
-
+) -> int:
     lr_schedule = get_lr_schedule(
         schedule=training_config.lr_schedule,
         max_lr=training_config.learning_rate,
         warmup_steps=training_config.lr_warmup_steps,
-        total_steps=total_steps
+        total_steps=training_config.max_steps,
     )
+    step_times = deque(maxlen=100)
+    batch_iter = iter_batches(train_loader)
 
-    step_times = deque(maxlen=100) # sliding window average
-    step_start_time = time.time()
-    best_val_loss = float('inf')
+    model.train()
+    for global_step in range(1, training_config.max_steps + 1):
+        step_start_time = time.time()
 
-    # Initialize the RichLogger
-    rich_logger = RichLogger(total_steps=total_steps, batch_size=training_config.batch_size)
+        x, y = next(batch_iter)
+        x = x.to(device)
+        y = y.to(device)
 
-    with rich_logger:
-        for e in range(training_config.num_epochs):
-            rich_logger.print_epoch_start(e)
+        opt.zero_grad(set_to_none=True)
+        lr = lr_schedule(global_step - 1)
+        for param_group in opt.param_groups:
+            param_group["lr"] = lr
 
-            running_loss: float = 0.0
+        logits = model(x)
+        loss_value = loss_fn(logits, y)
+        loss_value.backward()
+        opt.step()
 
-            for i, batch in enumerate(train_loader):
-                step_start_time = time.time()
+        loss_scalar = loss_value.item()
+        perplexity = math.exp(loss_scalar)
+        step_time = time.time() - step_start_time
+        step_times.append(step_time)
+        avg_step_time = sum(step_times) / len(step_times)
+        steps_per_second = 1.0 / avg_step_time
 
-                x: torch.Tensor
-                y: torch.Tensor
-                batch: BatchType = batch
-                x, y = batch
-                x = x.to(device)
-                y = y.to(device)
-                opt.zero_grad()
+        writer.add_scalar("train/loss", loss_scalar, global_step)
+        writer.add_scalar("train/perplexity", perplexity, global_step)
+        writer.add_scalar("train/lr", lr, global_step)
+        writer.add_scalar("perf/seconds_per_step", avg_step_time, global_step)
+        writer.add_scalar("perf/steps_per_second", steps_per_second, global_step)
 
-                for param_group in opt.param_groups:
-                    param_group['lr'] = lr_schedule(global_step)
+        if global_step == 1 or global_step % training_config.log_every == 0:
+            LOGGER.info(
+                "step=%d/%d loss=%.5f ppl=%.5f lr=%.2e sec_per_step=%.4f",
+                global_step,
+                training_config.max_steps,
+                loss_scalar,
+                perplexity,
+                lr,
+                avg_step_time,
+            )
+    return training_config.max_steps
 
-                writer.add_scalar("Learning Rate", opt.param_groups[0]['lr'], global_step)
 
-                logits: Logits = model(x)
-                loss_value = F.cross_entropy(
-                    logits.view(logits.size(0) * logits.size(1), logits.size(2)),
-                    y.view(y.size(0) * y.size(1)),
-                )
-
-                loss_value.backward()
-                loss_scalar = loss_value.item()
-                opt.step()
-                global_step += 1
-
-                step_time = time.time() - step_start_time
-                step_times.append(step_time)
-
-                avg_step_time = sum(step_times) / len(step_times)
-                steps_per_second = 1.0 / avg_step_time if avg_step_time > 0 else 0
-
-                writer.add_scalar("Loss/train", loss_scalar, global_step)
-                writer.add_scalar(
-                    "Perplexity/train",
-                    torch.exp(torch.tensor(loss_scalar)).item(),
-                    global_step
-                )
-                writer.add_scalar("Performance/seconds_per_step", avg_step_time, global_step)
-                writer.add_scalar("Performance/steps_per_second", steps_per_second, global_step)
-                running_loss += loss_scalar
-
-                # Update the live table more frequently than just on reporting steps
-                if global_step % max(1, training_config.reporting_steps // 10) == 0:
-                    last_loss = running_loss / max(1, global_step % training_config.reporting_steps or training_config.reporting_steps)
-                    last_perplexity = torch.exp(torch.tensor(last_loss)).item()
-                    
-                    rich_logger.update_progress(
-                        epoch=e,
-                        step=global_step,
-                        loss=last_loss,
-                        perplexity=last_perplexity,
-                        learning_rate=opt.param_groups[0]['lr'],
-                        avg_step_time=avg_step_time,
-                        steps_per_second=steps_per_second
-                    )
-
-                if global_step % training_config.reporting_steps == 0:
-                    running_loss = 0.0
-
-                if global_step % training_config.validation_eval_steps == 0:
-                    step_times.clear()
-                    val_loss = val_eval(
-                        model=model,
-                        writer=writer,
-                        global_step=global_step,
-                        val_loader=val_loader,
-                        device=device,
-                        rich_logger=rich_logger,
-                        best_val_loss=best_val_loss
-                    )
-                    if val_loss < best_val_loss:
-                        best_val_loss = val_loss
-
-                if global_step % training_config.sampling_steps == 0:
-                    step_times.clear()
-                    sample_and_log(
-                        model=model,
-                        global_step=global_step,
-                        writer=writer,
-                        device=device,
-                        subset=train_loader.dataset,
-                        model_config=model_config,
-                        sampling_length=training_config.sampling_length_multiplier * model_config.context_length,
-                        rich_logger=rich_logger
-                    )
-
-def main():
-    """Entry point for the mirrorshift-train command."""
-    # default values are for tiny model
+def main() -> int:
     parser = argparse.ArgumentParser(description="Train a mirrorshift transformer model")
-    parser.add_argument('--model-config', type=str, default='mirrorshift/config/model_configs/small.json',
-                      help='Path to model configuration file')
-    parser.add_argument('--training-config', type=str, default='mirrorshift/config/training_configs/small.json',
-                      help='Path to training configuration file')
-    parser.add_argument('--dataset', type=str, default='mirrorshift/datasets/coqa_stories.txt',
-                      help='Path to training text file')
+    parser.add_argument(
+        "--model-config",
+        type=str,
+        default="mirrorshift/config/model_configs/small.json",
+        help="Path to model configuration file",
+    )
+    parser.add_argument(
+        "--training-config",
+        type=str,
+        default="mirrorshift/config/training_configs/small.json",
+        help="Path to training configuration file",
+    )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default="mirrorshift/datasets/coqa_stories.txt",
+        help="Path to training text file",
+    )
+    parser.add_argument(
+        "--spec",
+        type=str,
+        default="causal_lm",
+        help=f"Experiment spec name ({', '.join(list_train_specs())})",
+    )
+    parser.add_argument(
+        "--log-dir",
+        type=str,
+        default="runs",
+        help="TensorBoard log directory",
+    )
     args = parser.parse_args()
 
-    model_config: ModelConfig = read_model_config(args.model_config)
-    training_config: TrainingConfig = read_training_config(args.training_config)
-    
-    # Continue with the rest of the training process
-    writer: SummaryWriter = SummaryWriter()
-
-    full_dataset: TiktokenTxtDataset = TiktokenTxtDataset(
-        args.dataset, model_config.context_length
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s - %(message)s",
     )
 
-    # this is mainly useful with char-level tokenizers
-    assert full_dataset.get_vocab_size() == model_config.vocab_size, \
-    f"dataset vocab size is {full_dataset.get_vocab_size()}, model_config vocab size is {model_config.vocab_size}"
-
-    train_size = int(len(full_dataset) * (1-training_config.validation_split))
-    val_size = len(full_dataset) - train_size
-
-    train_dataset, val_dataset = torch.utils.data.random_split(
-        dataset=full_dataset,
-        lengths=[train_size, val_size],
-        generator=torch.Generator()
+    model_config = read_model_config(args.model_config)
+    training_config = read_training_config(args.training_config)
+    LOGGER.info(
+        "Resolved model config:\n%s",
+        json.dumps(config_to_dict(model_config), indent=2, sort_keys=True),
+    )
+    LOGGER.info(
+        "Resolved training config:\n%s",
+        json.dumps(config_to_dict(training_config), indent=2, sort_keys=True),
     )
 
-    model = CausalTransformer(model_config=model_config)
+    train_spec = get_train_spec(args.spec)
+    train_dataset = train_spec.build_dataset(args.dataset, model_config.context_length)
 
-    device: str
-    if training_config.device == "auto":
-        if torch.cuda.is_available():
-            device = "cuda"
-            torch.set_float32_matmul_precision("high")
-        else:
-            device = "cpu"
-    else:
-        device = training_config.device
+    if train_dataset.get_vocab_size() != model_config.vocab_size:
+        raise ValueError(
+            "Dataset vocab size does not match model config vocab size: "
+            f"{train_dataset.get_vocab_size()} vs {model_config.vocab_size}"
+        )
+    if len(train_dataset) < training_config.batch_size:
+        raise ValueError(
+            "Dataset must have at least batch_size sequences. "
+            f"len(dataset)={len(train_dataset)} batch_size={training_config.batch_size}"
+        )
 
-    model = model.to(device)
-
-    opt: optim.AdamW = optim.AdamW(model.parameters(), lr=training_config.learning_rate)
-
-    model = torch.compile(model)
-
-    train_sampler = RandomSampler(train_dataset)
-    val_sampler = SequentialSampler(val_dataset)
     train_loader: DataLoader = DataLoader(
         train_dataset,
         batch_size=training_config.batch_size,
-        sampler=train_sampler
+        sampler=RandomSampler(train_dataset),
     )
-    val_loader: DataLoader = DataLoader(
-        val_dataset,
-        batch_size=training_config.batch_size,
-        sampler=val_sampler
+    if len(train_loader) == 0:
+        raise ValueError("train_loader is empty for the provided configuration")
+
+    model = train_spec.build_model(model_config)
+    device = resolve_device(training_config.device)
+    model = model.to(device)
+    if training_config.compile:
+        model = torch.compile(model)
+
+    opt = optim.AdamW(model.parameters(), lr=training_config.learning_rate)
+    writer = SummaryWriter(log_dir=args.log_dir)
+
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    LOGGER.info(
+        "dataset_size=%d trainable_params=%d device=%s max_steps=%d",
+        len(train_dataset),
+        trainable_params,
+        device,
+        training_config.max_steps,
     )
 
-    trainable_params: int = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print("\n╭─ Training Info ──────────────────────")
-    print(f"│ Total dataset size:   {len(full_dataset)}")
-    print(f"│ Trainable parameters: {trainable_params}")
-    print(f"│ Training set size:    {len(train_dataset)}")
-    print(f"│ Training on device:   {device}")
-    print(f"│ Validation set size:  {len(val_dataset)}")
-    print(  "╰──────────────────────────────────────")
-
-    train(
+    final_step = train(
         model=model,
         train_loader=train_loader,
-        val_loader=val_loader,
         opt=opt,
+        loss_fn=train_spec.loss_fn,
         device=device,
         training_config=training_config,
-        model_config=model_config,
         writer=writer,
     )
-
     writer.flush()
-    
+    writer.close()
+
+    LOGGER.info("Training complete at step=%d", final_step)
     return 0
 
-if __name__ == '__main__':
-    main()
+
+if __name__ == "__main__":
+    raise SystemExit(main())

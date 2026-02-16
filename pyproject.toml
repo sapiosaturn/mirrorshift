@@ -11,11 +11,13 @@ dependencies = [
     "torch==2.7.1",
     "tensorboard>=2.18.0",
     "tiktoken>=0.8.0",
-    "rich>=14.0.0",
 ]
 
-[tool.setuptools]
-packages = ["mirrorshift"]
+[dependency-groups]
+dev = ["pytest>=8.3.4"]
+
+[tool.setuptools.packages.find]
+include = ["mirrorshift*"]
 
 [project.scripts]
 mirrorshift-train = "mirrorshift.train:main"

@@ -6,8 +6,6 @@
   "num_kv_heads": 4,
   "context_length": 64,
   "feedforward_dim": 384,
-  "attention_dropout_p": 0.05,
-  "residual_dropout_p": 0.05,
   "q_lora_rank": 64,
   "kv_lora_rank": 64,
   "qk_nope_head_dim": 32,

@@ -10,8 +10,6 @@ mirrorshift/
   __init__.py
   train.py
   data.py
-  inference.py
-  logging_and_metrics.py
   utils.py
   modeling/
     __init__.py
@@ -19,6 +17,10 @@ mirrorshift/
     attention.py
     decoder_blocks.py
     ffn.py
+  experiments/
+    __init__.py
+    spec.py
+    default.py
   config/
     model_configs/
       small.json
@@ -32,13 +34,13 @@ mirrorshift/
 
 - `mirrorshift/train.py`: CLI entrypoint and end-to-end training loop.
 - `mirrorshift/data.py`: text dataset wrappers (`CharacterTxtDataset`, `TiktokenTxtDataset`).
-- `mirrorshift/inference.py`: token sampling helpers (`top_p`, `min_p`, autoregressive sampling).
-- `mirrorshift/logging_and_metrics.py`: Rich live UI for training progress + validation/sample display.
 - `mirrorshift/utils.py`: config dataclasses, JSON config loaders, LR schedule helpers.
 - `mirrorshift/modeling/causal_transformers.py`: `CausalTransformer` and RoPE frequency precomputation.
 - `mirrorshift/modeling/attention.py`: GQA and MLA attention blocks plus builder utility.
 - `mirrorshift/modeling/decoder_blocks.py`: sequential and parallel decoder block variants.
 - `mirrorshift/modeling/ffn.py`: feedforward block and activation helpers.
+- `mirrorshift/experiments/spec.py`: experiment contract (`TrainSpec`) for model/data/loss composition.
+- `mirrorshift/experiments/default.py`: default causal LM experiment wiring.
 - `mirrorshift/config/model_configs/small.json`: default tiny model config.
 - `mirrorshift/config/training_configs/small.json`: default training config.
 - `mirrorshift/datasets/coqa_stories.txt`: sample training corpus.
@@ -99,8 +101,6 @@ config = ModelConfig(
     num_heads=8,
     context_length=64,
     feedforward_dim=384,
-    attention_dropout_p=0.05,
-    residual_dropout_p=0.05,
     attention_type="mla",
     q_lora_rank=64,
     kv_lora_rank=64,
