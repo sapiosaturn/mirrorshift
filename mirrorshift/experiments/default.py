@@ -3,7 +3,7 @@ import torch.nn.functional as F
 
 from mirrorshift.data import TiktokenTxtDataset
 from mirrorshift.modeling.causal_transformers import CausalTransformer
-from mirrorshift.utils import ModelConfig
+from mirrorshift.config import ModelConfig
 
 from .spec import TrainSpec
 

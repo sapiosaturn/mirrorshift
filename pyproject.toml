@@ -11,6 +11,7 @@ dependencies = [
     "torch==2.7.1",
     "tensorboard>=2.18.0",
     "tiktoken>=0.8.0",
+    "tyro>=0.9.35",
 ]
 
 [dependency-groups]

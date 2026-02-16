@@ -1,7 +1,5 @@
 """Step-based training entrypoint."""
 
-import argparse
-import json
 import logging
 import math
 import time
@@ -13,14 +11,13 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 
-from mirrorshift.experiments import get_train_spec, list_train_specs
-from mirrorshift.utils import (
+from mirrorshift.experiments import get_train_spec
+from mirrorshift.config import (
+    ConfigManager,
+    JobConfig,
     TrainingConfig,
-    config_to_dict,
-    get_lr_schedule,
-    read_model_config,
-    read_training_config,
 )
+from mirrorshift.utils import get_lr_schedule
 
 BatchType = Tuple[torch.Tensor, torch.Tensor]
 LossFunction = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
@@ -36,7 +33,7 @@ def resolve_device(device_name: str) -> str:
             raise RuntimeError("CUDA device requested but torch.cuda.is_available() is False")
         torch.set_float32_matmul_precision("high")
         return "cuda"
-    raise ValueError("training_config.device must be 'cpu' or 'cuda'")
+    raise ValueError("training.device must be 'cpu' or 'cuda'")
 
 
 def iter_batches(train_loader: DataLoader) -> Iterator[BatchType]:
@@ -108,85 +105,44 @@ def train(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Train a mirrorshift transformer model")
-    parser.add_argument(
-        "--model-config",
-        type=str,
-        default="mirrorshift/config/model_configs/small.json",
-        help="Path to model configuration file",
-    )
-    parser.add_argument(
-        "--training-config",
-        type=str,
-        default="mirrorshift/config/training_configs/small.json",
-        help="Path to training configuration file",
-    )
-    parser.add_argument(
-        "--dataset",
-        type=str,
-        default="mirrorshift/datasets/coqa_stories.txt",
-        help="Path to training text file",
-    )
-    parser.add_argument(
-        "--spec",
-        type=str,
-        default="causal_lm",
-        help=f"Experiment spec name ({', '.join(list_train_specs())})",
-    )
-    parser.add_argument(
-        "--log-dir",
-        type=str,
-        default="runs",
-        help="TensorBoard log directory",
-    )
-    args = parser.parse_args()
-
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s - %(message)s",
     )
 
-    model_config = read_model_config(args.model_config)
-    training_config = read_training_config(args.training_config)
-    LOGGER.info(
-        "Resolved model config:\n%s",
-        json.dumps(config_to_dict(model_config), indent=2, sort_keys=True),
-    )
-    LOGGER.info(
-        "Resolved training config:\n%s",
-        json.dumps(config_to_dict(training_config), indent=2, sort_keys=True),
-    )
+    config: JobConfig = ConfigManager().parse_args()
+    config.maybe_log(LOGGER)
 
-    train_spec = get_train_spec(args.spec)
-    train_dataset = train_spec.build_dataset(args.dataset, model_config.context_length)
+    train_spec = get_train_spec(config.run.spec)
+    train_dataset = train_spec.build_dataset(config.run.dataset, config.model.context_length)
 
-    if train_dataset.get_vocab_size() != model_config.vocab_size:
+    if train_dataset.get_vocab_size() != config.model.vocab_size:
         raise ValueError(
             "Dataset vocab size does not match model config vocab size: "
-            f"{train_dataset.get_vocab_size()} vs {model_config.vocab_size}"
+            f"{train_dataset.get_vocab_size()} vs {config.model.vocab_size}"
         )
-    if len(train_dataset) < training_config.batch_size:
+    if len(train_dataset) < config.training.batch_size:
         raise ValueError(
             "Dataset must have at least batch_size sequences. "
-            f"len(dataset)={len(train_dataset)} batch_size={training_config.batch_size}"
+            f"len(dataset)={len(train_dataset)} batch_size={config.training.batch_size}"
         )
 
     train_loader: DataLoader = DataLoader(
         train_dataset,
-        batch_size=training_config.batch_size,
+        batch_size=config.training.batch_size,
         sampler=RandomSampler(train_dataset),
     )
     if len(train_loader) == 0:
         raise ValueError("train_loader is empty for the provided configuration")
 
-    model = train_spec.build_model(model_config)
-    device = resolve_device(training_config.device)
+    model = train_spec.build_model(config.model)
+    device = resolve_device(config.training.device)
     model = model.to(device)
-    if training_config.compile:
+    if config.training.compile:
         model = torch.compile(model)
 
-    opt = optim.AdamW(model.parameters(), lr=training_config.learning_rate)
-    writer = SummaryWriter(log_dir=args.log_dir)
+    opt = optim.AdamW(model.parameters(), lr=config.training.learning_rate)
+    writer = SummaryWriter(log_dir=config.run.log_dir)
 
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     LOGGER.info(
@@ -194,7 +150,7 @@ def main() -> int:
         len(train_dataset),
         trainable_params,
         device,
-        training_config.max_steps,
+        config.training.max_steps,
     )
 
     final_step = train(
@@ -203,7 +159,7 @@ def main() -> int:
         opt=opt,
         loss_fn=train_spec.loss_fn,
         device=device,
-        training_config=training_config,
+        training_config=config.training,
         writer=writer,
     )
     writer.flush()

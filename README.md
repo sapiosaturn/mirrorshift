@@ -22,10 +22,8 @@ mirrorshift/
     spec.py
     default.py
   config/
-    model_configs/
-      small.json
-    training_configs/
-      small.json
+    train_configs/
+      small.toml
   datasets/
     coqa_stories.txt
 ```
@@ -33,16 +31,16 @@ mirrorshift/
 ## Module Map
 
 - `mirrorshift/train.py`: CLI entrypoint and end-to-end training loop.
+- `mirrorshift/config/`: unified dataclass schema + TOML/CLI config manager.
 - `mirrorshift/data.py`: text dataset wrappers (`CharacterTxtDataset`, `TiktokenTxtDataset`).
-- `mirrorshift/utils.py`: config dataclasses, JSON config loaders, LR schedule helpers.
+- `mirrorshift/utils.py`: LR schedule helpers.
 - `mirrorshift/modeling/causal_transformers.py`: `CausalTransformer` and RoPE frequency precomputation.
 - `mirrorshift/modeling/attention.py`: GQA and MLA attention blocks plus builder utility.
 - `mirrorshift/modeling/decoder_blocks.py`: sequential and parallel decoder block variants.
 - `mirrorshift/modeling/ffn.py`: feedforward block and activation helpers.
 - `mirrorshift/experiments/spec.py`: experiment contract (`TrainSpec`) for model/data/loss composition.
 - `mirrorshift/experiments/default.py`: default causal LM experiment wiring.
-- `mirrorshift/config/model_configs/small.json`: default tiny model config.
-- `mirrorshift/config/training_configs/small.json`: default training config.
+- `mirrorshift/config/train_configs/small.toml`: default unified run/model/training config.
 - `mirrorshift/datasets/coqa_stories.txt`: sample training corpus.
 
 ## Installation
@@ -69,17 +67,17 @@ source .venv/bin/activate
 ### Package CLI
 
 ```bash
-mirrorshift-train --model-config mirrorshift/config/model_configs/small.json \
-                  --training-config mirrorshift/config/training_configs/small.json \
-                  --dataset mirrorshift/datasets/coqa_stories.txt
+mirrorshift-train --job.config_file mirrorshift/config/train_configs/small.toml \
+                  --training.max_steps 100 \
+                  --training.log_every 10
 ```
 
 ### Module Run
 
 ```bash
-python3 -m mirrorshift.train --model-config mirrorshift/config/model_configs/small.json \
-                             --training-config mirrorshift/config/training_configs/small.json \
-                             --dataset mirrorshift/datasets/coqa_stories.txt
+python3 -m mirrorshift.train --job.config_file mirrorshift/config/train_configs/small.toml \
+                             --training.max_steps 100 \
+                             --run.dataset mirrorshift/datasets/coqa_stories.txt
 ```
 
 ## Monitoring

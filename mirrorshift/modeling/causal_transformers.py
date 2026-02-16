@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from mirrorshift.modeling.decoder_blocks import DecoderBlock, ParallelDecoderBlock
 from mirrorshift.modeling.attention import build_attention_block
 from mirrorshift.modeling.ffn import FFN
-from mirrorshift.utils import ModelConfig
+from mirrorshift.config import ModelConfig
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0) -> torch.Tensor:
     # theta variable is base theta, 10000 in original paper
@@ -58,4 +58,3 @@ class CausalTransformer(nn.Module):
         output = F.rms_norm(output, (output.size(-1),))
         output = self.lm_head(output)
         return output
-

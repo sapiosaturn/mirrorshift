@@ -3,9 +3,9 @@ import pytest
 from torch.utils.data import DataLoader, Dataset, RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 
+from mirrorshift.config import ModelConfig, TrainingConfig
 from mirrorshift.modeling.causal_transformers import CausalTransformer
 from mirrorshift.train import resolve_device, train
-from mirrorshift.utils import ModelConfig, TrainingConfig
 
 
 class TinyTokenDataset(Dataset):

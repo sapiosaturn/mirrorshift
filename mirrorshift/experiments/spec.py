@@ -4,7 +4,7 @@ from typing import Callable
 import torch
 from torch.utils.data import Dataset
 
-from mirrorshift.utils import ModelConfig
+from mirrorshift.config import ModelConfig
 
 ModelBuilder = Callable[[ModelConfig], torch.nn.Module]
 DatasetBuilder = Callable[[str, int], Dataset]

@@ -4,7 +4,7 @@ from mirrorshift.modeling.attention import build_attention_block
 from mirrorshift.modeling.causal_transformers import CausalTransformer, precompute_freqs_cis
 from mirrorshift.modeling.decoder_blocks import DecoderBlock, ParallelDecoderBlock
 from mirrorshift.modeling.ffn import FFN
-from mirrorshift.utils import ModelConfig
+from mirrorshift.config import ModelConfig
 
 
 def build_model_config(attention_type: str) -> ModelConfig:

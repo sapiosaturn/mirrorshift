@@ -1,0 +1,32 @@
+[job]
+print_config = true
+
+[run]
+dataset = "mirrorshift/datasets/coqa_stories.txt"
+spec = "causal_lm"
+log_dir = "runs"
+
+[model]
+attention_type = "mla"
+vocab_size = 50281
+num_layers = 2
+embedding_dim = 128
+num_heads = 8
+num_kv_heads = 4
+context_length = 64
+feedforward_dim = 384
+q_lora_rank = 64
+kv_lora_rank = 64
+qk_nope_head_dim = 32
+qk_rope_head_dim = 16
+v_head_dim = 64
+
+[training]
+device = "cpu"
+batch_size = 16
+learning_rate = 5e-4
+lr_warmup_steps = 50
+lr_schedule = "wsd_exponential"
+max_steps = 500
+compile = false
+log_every = 25

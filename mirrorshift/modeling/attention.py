@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from mirrorshift.utils import ModelConfig
+
+from mirrorshift.config import ModelConfig
 
 class GroupedQueryAttention(nn.Module):
     # for grouped query attention, many queries are grouped together with a single key and value matrix
