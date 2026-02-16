@@ -83,8 +83,26 @@ python3 -m mirrorshift.train --job.config_file mirrorshift/config/train_configs/
 ## Monitoring
 
 ```bash
-tensorboard --logdir runs/
+mirrorshift-train --job.config_file mirrorshift/config/train_configs/small.toml \
+                  --run.wandb_mode online \
+                  --run.wandb_project mirrorshift
 ```
+
+## Run Artifacts
+
+Each training invocation creates an immutable run directory:
+
+```text
+runs/<run_id>/
+  config.json
+  manifest.json
+```
+
+- `config.json`: resolved dataclass config snapshot.
+- `manifest.json`: run metadata (dataset, device, params, argv, paths).
+- metrics: logged to Weights & Biases.
+
+Set a fixed run id with `--run.id <name>` or let mirrorshift auto-generate one.
 
 ## Programmatic Use
 

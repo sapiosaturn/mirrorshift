@@ -26,6 +26,12 @@ class Run:
     dataset: str = "mirrorshift/datasets/coqa_stories.txt"
     spec: str = "causal_lm"
     log_dir: str = "runs"
+    id: str | None = None
+    wandb_project: str = "mirrorshift"
+    wandb_entity: str | None = None
+    wandb_mode: Literal["online", "offline", "disabled"] = "offline"
+    manifest_file: str = "manifest.json"
+    config_snapshot_file: str = "config.json"
 
 
 @dataclass(frozen=True)
@@ -134,4 +140,13 @@ def validate_run_config(config: Run) -> None:
         raise ValueError("run.spec must be non-empty")
     if not config.log_dir:
         raise ValueError("run.log_dir must be non-empty")
-
+    if config.id is not None and not config.id:
+        raise ValueError("run.id must be non-empty when provided")
+    if not config.wandb_project:
+        raise ValueError("run.wandb_project must be non-empty")
+    if config.wandb_entity is not None and not config.wandb_entity:
+        raise ValueError("run.wandb_entity must be non-empty when provided")
+    if not config.manifest_file:
+        raise ValueError("run.manifest_file must be non-empty")
+    if not config.config_snapshot_file:
+        raise ValueError("run.config_snapshot_file must be non-empty")

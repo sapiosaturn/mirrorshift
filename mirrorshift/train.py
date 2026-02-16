@@ -9,7 +9,6 @@ from typing import Callable, Iterator, Tuple
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader, RandomSampler
-from torch.utils.tensorboard import SummaryWriter
 
 from mirrorshift.experiments import get_train_spec
 from mirrorshift.config import (
@@ -17,6 +16,8 @@ from mirrorshift.config import (
     JobConfig,
     TrainingConfig,
 )
+from mirrorshift.metrics import MetricsLogger, WandBLogger
+from mirrorshift.run_manifest import create_run_artifacts, write_run_manifest
 from mirrorshift.utils import get_lr_schedule
 
 BatchType = Tuple[torch.Tensor, torch.Tensor]
@@ -49,7 +50,7 @@ def train(
     loss_fn: LossFunction,
     device: str,
     training_config: TrainingConfig,
-    writer: SummaryWriter,
+    metrics_logger: MetricsLogger,
 ) -> int:
     lr_schedule = get_lr_schedule(
         schedule=training_config.lr_schedule,
@@ -85,11 +86,16 @@ def train(
         avg_step_time = sum(step_times) / len(step_times)
         steps_per_second = 1.0 / avg_step_time
 
-        writer.add_scalar("train/loss", loss_scalar, global_step)
-        writer.add_scalar("train/perplexity", perplexity, global_step)
-        writer.add_scalar("train/lr", lr, global_step)
-        writer.add_scalar("perf/seconds_per_step", avg_step_time, global_step)
-        writer.add_scalar("perf/steps_per_second", steps_per_second, global_step)
+        metrics_logger.log(
+            {
+                "train/loss": loss_scalar,
+                "train/perplexity": perplexity,
+                "train/lr": lr,
+                "perf/seconds_per_step": avg_step_time,
+                "perf/steps_per_second": steps_per_second,
+            },
+            step=global_step,
+        )
 
         if global_step == 1 or global_step % training_config.log_every == 0:
             LOGGER.info(
@@ -112,6 +118,8 @@ def main() -> int:
 
     config: JobConfig = ConfigManager().parse_args()
     config.maybe_log(LOGGER)
+    artifacts = create_run_artifacts(config)
+    LOGGER.info("run_id=%s run_dir=%s", artifacts.run_id, artifacts.run_dir)
 
     train_spec = get_train_spec(config.run.spec)
     train_dataset = train_spec.build_dataset(config.run.dataset, config.model.context_length)
@@ -142,9 +150,21 @@ def main() -> int:
         model = torch.compile(model)
 
     opt = optim.AdamW(model.parameters(), lr=config.training.learning_rate)
-    writer = SummaryWriter(log_dir=config.run.log_dir)
+    metrics_logger = WandBLogger(
+        config=config,
+        run_id=artifacts.run_id,
+        run_dir=artifacts.run_dir,
+    )
 
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    write_run_manifest(
+        artifacts=artifacts,
+        config=config,
+        dataset_size=len(train_dataset),
+        trainable_params=trainable_params,
+        device=device,
+    )
+
     LOGGER.info(
         "dataset_size=%d trainable_params=%d device=%s max_steps=%d",
         len(train_dataset),
@@ -152,18 +172,24 @@ def main() -> int:
         device,
         config.training.max_steps,
     )
-
-    final_step = train(
-        model=model,
-        train_loader=train_loader,
-        opt=opt,
-        loss_fn=train_spec.loss_fn,
-        device=device,
-        training_config=config.training,
-        writer=writer,
+    LOGGER.info(
+        "config_snapshot=%s run_manifest=%s",
+        artifacts.config_snapshot_path,
+        artifacts.manifest_path,
     )
-    writer.flush()
-    writer.close()
+
+    try:
+        final_step = train(
+            model=model,
+            train_loader=train_loader,
+            opt=opt,
+            loss_fn=train_spec.loss_fn,
+            device=device,
+            training_config=config.training,
+            metrics_logger=metrics_logger,
+        )
+    finally:
+        metrics_logger.close()
 
     LOGGER.info("Training complete at step=%d", final_step)
     return 0

@@ -6,8 +6,10 @@ import pytest
 from mirrorshift.config import (
     ConfigManager,
     ModelConfig,
+    Run,
     TrainingConfig,
     validate_model_config,
+    validate_run_config,
     validate_training_config,
 )
 from mirrorshift.utils import get_lr_schedule
@@ -88,6 +90,21 @@ def test_validate_training_config_invalid_device() -> None:
     )
     with pytest.raises(ValueError, match="must be 'cpu' or 'cuda'"):
         validate_training_config(config)
+
+
+def test_validate_run_config_empty_log_dir() -> None:
+    with pytest.raises(ValueError, match="run.log_dir must be non-empty"):
+        validate_run_config(Run(log_dir=""))
+
+
+def test_validate_run_config_empty_run_id_when_set() -> None:
+    with pytest.raises(ValueError, match="run.id must be non-empty when provided"):
+        validate_run_config(Run(id=""))
+
+
+def test_validate_run_config_empty_wandb_project() -> None:
+    with pytest.raises(ValueError, match="run.wandb_project must be non-empty"):
+        validate_run_config(Run(wandb_project=""))
 
 
 def test_get_lr_schedule_unknown_name() -> None:

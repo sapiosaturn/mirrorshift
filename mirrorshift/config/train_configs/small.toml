@@ -5,6 +5,10 @@ print_config = true
 dataset = "mirrorshift/datasets/coqa_stories.txt"
 spec = "causal_lm"
 log_dir = "runs"
+wandb_project = "mirrorshift"
+wandb_mode = "offline"
+manifest_file = "manifest.json"
+config_snapshot_file = "config.json"
 
 [model]
 attention_type = "mla"

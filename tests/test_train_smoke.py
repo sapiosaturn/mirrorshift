@@ -1,7 +1,6 @@
 import torch
 import pytest
 from torch.utils.data import DataLoader, Dataset, RandomSampler
-from torch.utils.tensorboard import SummaryWriter
 
 from mirrorshift.config import ModelConfig, TrainingConfig
 from mirrorshift.modeling.causal_transformers import CausalTransformer
@@ -70,7 +69,19 @@ def test_train_cpu_smoke_single_digit_steps(tmp_path) -> None:
         sampler=RandomSampler(dataset),
     )
     opt = torch.optim.AdamW(model.parameters(), lr=training_config.learning_rate)
-    writer = SummaryWriter(log_dir=tmp_path / "tb")
+
+    class DummyMetricsLogger:
+        def __init__(self):
+            self.logged_steps: list[int] = []
+
+        def log(self, metrics: dict[str, float], step: int) -> None:
+            assert "train/loss" in metrics
+            self.logged_steps.append(step)
+
+        def close(self) -> None:
+            return None
+
+    metrics_logger = DummyMetricsLogger()
 
     final_step = train(
         model=model,
@@ -82,9 +93,9 @@ def test_train_cpu_smoke_single_digit_steps(tmp_path) -> None:
         ),
         device="cpu",
         training_config=training_config,
-        writer=writer,
+        metrics_logger=metrics_logger,
     )
-    writer.close()
 
     assert final_step == training_config.max_steps
+    assert metrics_logger.logged_steps[-1] == training_config.max_steps
     assert not torch.equal(initial_weight, model.lm_head.weight.detach())
