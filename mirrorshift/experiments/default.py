@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 
-from mirrorshift.data import TiktokenTxtDataset
+from mirrordata import TiktokenTextDataset
 from mirrorshift.modeling.causal_transformers import CausalTransformer
 from mirrorshift.config import ModelConfig
 
@@ -12,8 +12,8 @@ def build_default_model(model_config: ModelConfig) -> torch.nn.Module:
     return CausalTransformer(model_config=model_config)
 
 
-def build_default_dataset(dataset_path: str, context_length: int) -> TiktokenTxtDataset:
-    return TiktokenTxtDataset(dataset_path, sequence_length=context_length)
+def build_default_dataset(dataset_path: str, context_length: int) -> TiktokenTextDataset:
+    return TiktokenTextDataset(dataset_path, sequence_length=context_length)
 
 
 def causal_lm_loss(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:

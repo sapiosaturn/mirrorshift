@@ -7,9 +7,11 @@ Current focus is architecture experiments (GQA and MLA attention), a simple trai
 
 ```text
 mirrorshift/
+  mirrordata/
+    pyproject.toml
+    src/mirrordata/
   __init__.py
   train.py
-  data.py
   utils.py
   modeling/
     __init__.py
@@ -31,8 +33,8 @@ mirrorshift/
 ## Module Map
 
 - `mirrorshift/train.py`: CLI entrypoint and end-to-end training loop.
+- `mirrordata/`: local workspace package for data contracts, tokenizers, and dataset runtime scaffolding.
 - `mirrorshift/config/`: unified dataclass schema + TOML/CLI config manager.
-- `mirrorshift/data.py`: text dataset wrappers (`CharacterTxtDataset`, `TiktokenTxtDataset`).
 - `mirrorshift/utils.py`: LR schedule helpers.
 - `mirrorshift/modeling/causal_transformers.py`: `CausalTransformer` and RoPE frequency precomputation.
 - `mirrorshift/modeling/attention.py`: GQA and MLA attention blocks plus builder utility.
@@ -45,22 +47,18 @@ mirrorshift/
 
 ## Installation
 
-### Editable Install
-
-```bash
-git clone https://github.com/sapiosaturn/mirrorshift.git
-cd mirrorshift
-python3 -m pip install -e .
-```
-
-### UV Workflow
+### UV Workspace
 
 ```bash
 git clone https://github.com/sapiosaturn/mirrorshift.git
 cd mirrorshift
 uv sync
-source .venv/bin/activate
 ```
+
+This installs both workspace packages:
+
+- `mirrorshift`
+- `mirrordata`
 
 ## Training
 
