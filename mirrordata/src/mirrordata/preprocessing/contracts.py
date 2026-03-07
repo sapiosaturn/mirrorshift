@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Iterable, Protocol, Sequence
 
 from mirrordata.snapshot import SnapshotManifest
@@ -15,6 +16,9 @@ class Document:
 
 
 class DocumentSource(Protocol):
+    def estimate_documents(self) -> int | None:
+        ...
+
     def __iter__(self) -> Iterable[Document]:
         ...
 
@@ -30,10 +34,14 @@ class TokenTransform(Protocol):
 
 
 class SnapshotWriter(Protocol):
-    tokenizer: TokenizerBackend
-
-    def write_document(self, token_ids: Sequence[int], *, document: Document) -> None:
+    def write_document(self, token_ids: Sequence[int]) -> None:
         ...
 
     def finalize(self) -> SnapshotManifest:
         ...
+
+
+@dataclass(frozen=True)
+class ParquetInput:
+    paths: tuple[Path, ...]
+    text_column: str = "text"

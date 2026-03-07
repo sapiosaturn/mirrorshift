@@ -43,6 +43,9 @@ DocumentSource
 The first implementation stays intentionally small:
 
 - `tiktoken` only
+- parquet input with a `text` column
 - local raw text bridge dataset for current training path
 - snapshot manifest dataclasses
-- preprocessing protocols only, not a full production prep pipeline yet
+- raw `.bin` shard writing plus `.idx` document indices
+- sequence-plan generation for causal LM training
+- deterministic runtime dataset/loader APIs

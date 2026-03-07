@@ -1,6 +1,6 @@
 # Snapshot Format
 
-This document defines the initial `mirrordata` snapshot direction.
+This document defines the initial implemented `mirrordata` snapshot format.
 
 ## Design Goals
 
@@ -22,19 +22,20 @@ Raw text ingestion remains useful for:
 
 It is not the long-term hot path.
 
-## Proposed Layout
+## Implemented Layout
 
 ```text
 snapshot_root/
   manifest.json
   shards/
-    tokens-000000.bin
-    tokens-000000.idx
-    tokens-000001.bin
-    tokens-000001.idx
-  indices/
-    train.sample_idx.npy
-    train.shuffle_idx.seed-00042.npy
+    train-tokens-00000.bin
+    train-tokens-00000.idx
+    train-tokens-00001.bin
+    train-tokens-00001.idx
+plan_root/
+  plan.json
+  sample_starts.npy
+  sample_order.npy
 ```
 
 ## Manifest Ownership
@@ -42,6 +43,7 @@ snapshot_root/
 `manifest.json` is the source of truth for:
 
 - snapshot id and format version
+- dataset name and split
 - tokenizer backend and tokenizer name
 - token dtype
 - shard inventory
@@ -51,24 +53,25 @@ snapshot_root/
 
 ## Shards
 
-The default shard payload should be contiguous token arrays.
+The default shard payload is a contiguous raw token array.
 
 - preferred payload: raw `.bin`
-- preferred token dtype: `uint32`
+- token dtype: `uint32`
 - paired `.idx` file stores document boundaries
+- shard manifests also record absolute token offset ranges
 
 `mirrordata` should avoid a more elaborate container format until there is a
 real constraint forcing it.
 
 ## Ordering
 
-Storage order and sample order should be separate concerns.
+Storage order and sample order are separate concerns.
 
-That means:
+The snapshot layer stores immutable token bytes. A separate plan directory stores:
 
-- shard bytes stay immutable
-- shuffle lives in explicit order/index files
-- resume state can be a single cursor into a known order
+- `sample_starts.npy`: all legal sequence starts for a given `sequence_length` and `stride`
+- `sample_order.npy`: the deterministic access order over those starts
+- `plan.json`: metadata describing the plan
 
 This is the main mechanism that keeps deterministic resume simple without
 relying on a runtime sampler.

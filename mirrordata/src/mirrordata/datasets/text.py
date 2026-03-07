@@ -5,7 +5,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import Dataset
 
-from mirrordata.tokenizers import TiktokenEncoding
+from mirrordata.tokenizers import TiktokenTokenizer
 
 
 class TiktokenTextDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
@@ -23,7 +23,7 @@ class TiktokenTextDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
     ) -> None:
         self.file_path = str(file_path)
         self.sequence_length = int(sequence_length)
-        self.tokenizer = TiktokenEncoding(tokenizer_name)
+        self.tokenizer = TiktokenTokenizer(tokenizer_name)
 
         text = Path(self.file_path).read_text()
         self.tokens = self.tokenizer.encode(text)
