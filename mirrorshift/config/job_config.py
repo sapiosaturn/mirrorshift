@@ -64,11 +64,21 @@ class TrainingConfig:
 
 
 @dataclass(frozen=True)
+class CheckpointConfig:
+    enable: bool = False
+    folder: str = "checkpoints"
+    interval: int = 100
+    keep_latest_k: int = 0
+    load_step: int | None = None
+
+
+@dataclass(frozen=True)
 class JobConfig:
     job: Job = field(default_factory=Job)
     run: Run = field(default_factory=Run)
     model: ModelConfig = field(default_factory=ModelConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
+    checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -150,3 +160,16 @@ def validate_run_config(config: Run) -> None:
         raise ValueError("run.manifest_file must be non-empty")
     if not config.config_snapshot_file:
         raise ValueError("run.config_snapshot_file must be non-empty")
+
+
+def validate_checkpoint_config(config: CheckpointConfig) -> None:
+    if not config.folder:
+        raise ValueError("checkpoint.folder must be non-empty")
+    if config.interval <= 0:
+        raise ValueError("checkpoint.interval must be > 0")
+    if config.keep_latest_k < 0:
+        raise ValueError("checkpoint.keep_latest_k must be >= 0")
+    if config.load_step is not None and config.load_step < -1:
+        raise ValueError("checkpoint.load_step must be -1, >= 0, or omitted")
+    if config.load_step is not None and not config.enable:
+        raise ValueError("checkpoint.enable must be true when checkpoint.load_step is set")

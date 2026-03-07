@@ -34,3 +34,9 @@ lr_schedule = "wsd_exponential"
 max_steps = 500
 compile = false
 log_every = 25
+
+[checkpoint]
+enable = false
+folder = "checkpoints"
+interval = 100
+keep_latest_k = 0

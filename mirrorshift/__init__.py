@@ -11,11 +11,18 @@ __version__ = "0.1.0"
 from mirrorshift.modeling.causal_transformers import (
     CausalTransformer,
 )
-from mirrorshift.config import ConfigManager, JobConfig, ModelConfig, TrainingConfig
+from mirrorshift.config import (
+    CheckpointConfig,
+    ConfigManager,
+    JobConfig,
+    ModelConfig,
+    TrainingConfig,
+)
 
 # Make these modules available for import
 __all__ = [
     "CausalTransformer",
+    "CheckpointConfig",
     "ConfigManager",
     "JobConfig",
     "ModelConfig",

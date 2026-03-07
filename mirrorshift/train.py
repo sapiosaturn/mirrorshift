@@ -10,6 +10,7 @@ import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader, RandomSampler
 
+from mirrorshift.checkpointing import CheckpointManager, TrainState
 from mirrorshift.experiments import get_train_spec
 from mirrorshift.config import (
     ConfigManager,
@@ -51,6 +52,8 @@ def train(
     device: str,
     training_config: TrainingConfig,
     metrics_logger: MetricsLogger,
+    train_state: TrainState | None = None,
+    checkpointer: CheckpointManager | None = None,
 ) -> int:
     lr_schedule = get_lr_schedule(
         schedule=training_config.lr_schedule,
@@ -60,9 +63,13 @@ def train(
     )
     step_times = deque(maxlen=100)
     batch_iter = iter_batches(train_loader)
+    active_train_state = train_state if train_state is not None else TrainState()
 
     model.train()
-    for global_step in range(1, training_config.max_steps + 1):
+    if active_train_state.step >= training_config.max_steps:
+        return active_train_state.step
+
+    for global_step in range(active_train_state.step + 1, training_config.max_steps + 1):
         step_start_time = time.time()
 
         x, y = next(batch_iter)
@@ -97,6 +104,13 @@ def train(
             step=global_step,
         )
 
+        active_train_state.step = global_step
+        if checkpointer is not None:
+            checkpointer.save(
+                global_step,
+                last_step=global_step == training_config.max_steps,
+            )
+
         if global_step == 1 or global_step % training_config.log_every == 0:
             LOGGER.info(
                 "step=%d/%d loss=%.5f ppl=%.5f lr=%.2e sec_per_step=%.4f",
@@ -107,7 +121,7 @@ def train(
                 lr,
                 avg_step_time,
             )
-    return training_config.max_steps
+    return active_train_state.step
 
 
 def main() -> int:
@@ -150,6 +164,18 @@ def main() -> int:
         model = torch.compile(model)
 
     opt = optim.AdamW(model.parameters(), lr=config.training.learning_rate)
+    train_state = TrainState()
+    checkpointer = CheckpointManager(
+        config=config.checkpoint,
+        run_dir=artifacts.run_dir,
+        model=model,
+        optimizer=opt,
+        train_state=train_state,
+    )
+    if config.checkpoint.load_step is not None:
+        checkpointer.load()
+        LOGGER.info("Resuming training from step=%d", train_state.step)
+
     metrics_logger = build_metrics_logger(
         config=config,
         run_id=artifacts.run_id,
@@ -157,13 +183,20 @@ def main() -> int:
     )
 
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    write_run_manifest(
-        artifacts=artifacts,
-        config=config,
-        dataset_size=len(train_dataset),
-        trainable_params=trainable_params,
-        device=device,
-    )
+    if not artifacts.resumed:
+        write_run_manifest(
+            artifacts=artifacts,
+            config=config,
+            dataset_size=len(train_dataset),
+            trainable_params=trainable_params,
+            device=device,
+        )
+    else:
+        LOGGER.info(
+            "Reusing existing config snapshot=%s and run manifest=%s",
+            artifacts.config_snapshot_path,
+            artifacts.manifest_path,
+        )
 
     LOGGER.info(
         "dataset_size=%d trainable_params=%d device=%s max_steps=%d",
@@ -187,6 +220,8 @@ def main() -> int:
             device=device,
             training_config=config.training,
             metrics_logger=metrics_logger,
+            train_state=train_state,
+            checkpointer=checkpointer,
         )
     finally:
         metrics_logger.close()

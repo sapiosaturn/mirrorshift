@@ -17,6 +17,7 @@ class RunArtifacts:
     run_dir: Path
     config_snapshot_path: Path
     manifest_path: Path
+    resumed: bool
 
 
 def resolve_run_id(requested_run_id: str | None) -> str:
@@ -33,18 +34,32 @@ def write_json_immutable(path: Path, payload: dict[str, Any]) -> None:
 def create_run_artifacts(config: JobConfig) -> RunArtifacts:
     run_id = resolve_run_id(config.run.id)
     run_dir = Path(config.run.log_dir) / run_id
-    run_dir.mkdir(parents=True, exist_ok=False)
 
     config_snapshot_path = run_dir / config.run.config_snapshot_file
     manifest_path = run_dir / config.run.manifest_file
 
-    write_json_immutable(config_snapshot_path, config.to_dict())
+    resumed = config.checkpoint.load_step is not None
+    if resumed:
+        if config.run.id is None:
+            raise ValueError("run.id must be set when resuming from a checkpoint")
+        if not run_dir.is_dir():
+            raise FileNotFoundError(f"Run directory does not exist for resume: {run_dir}")
+        if not config_snapshot_path.is_file():
+            raise FileNotFoundError(
+                f"Missing config snapshot for resume run: {config_snapshot_path}"
+            )
+        if not manifest_path.is_file():
+            raise FileNotFoundError(f"Missing run manifest for resume run: {manifest_path}")
+    else:
+        run_dir.mkdir(parents=True, exist_ok=False)
+        write_json_immutable(config_snapshot_path, config.to_dict())
 
     return RunArtifacts(
         run_id=run_id,
         run_dir=run_dir,
         config_snapshot_path=config_snapshot_path,
         manifest_path=manifest_path,
+        resumed=resumed,
     )
 
 

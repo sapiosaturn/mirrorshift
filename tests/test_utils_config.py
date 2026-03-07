@@ -4,10 +4,12 @@ from textwrap import dedent
 import pytest
 
 from mirrorshift.config import (
+    CheckpointConfig,
     ConfigManager,
     ModelConfig,
     Run,
     TrainingConfig,
+    validate_checkpoint_config,
     validate_model_config,
     validate_run_config,
     validate_training_config,
@@ -105,6 +107,41 @@ def test_validate_run_config_empty_run_id_when_set() -> None:
 def test_validate_run_config_empty_wandb_project() -> None:
     with pytest.raises(ValueError, match="run.wandb_project must be non-empty"):
         validate_run_config(Run(wandb_project=""))
+
+
+def test_validate_checkpoint_config_negative_keep_latest_k() -> None:
+    with pytest.raises(ValueError, match="checkpoint.keep_latest_k must be >= 0"):
+        validate_checkpoint_config(CheckpointConfig(keep_latest_k=-1))
+
+
+def test_validate_checkpoint_config_requires_enable_for_load_step() -> None:
+    with pytest.raises(ValueError, match="checkpoint.enable must be true"):
+        validate_checkpoint_config(CheckpointConfig(load_step=-1))
+
+
+def test_config_manager_parses_checkpoint_toml_and_cli(tmp_path: Path) -> None:
+    config_path = tmp_path / "checkpoint.toml"
+    config_path.write_text(
+        dedent(
+            """
+            [checkpoint]
+            enable = true
+            interval = 20
+            keep_latest_k = 3
+            """
+        )
+    )
+    config = ConfigManager().parse_args(
+        [
+            f"--job.config_file={config_path}",
+            "--checkpoint.load_step=-1",
+        ]
+    )
+
+    assert config.checkpoint.enable is True
+    assert config.checkpoint.interval == 20
+    assert config.checkpoint.keep_latest_k == 3
+    assert config.checkpoint.load_step == -1
 
 
 def test_get_lr_schedule_unknown_name() -> None:
