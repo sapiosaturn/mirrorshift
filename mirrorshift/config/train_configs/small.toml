@@ -1,6 +1,3 @@
-[job]
-print_config = true
-
 [run]
 spec = "causal_lm"
 log_dir = "runs"

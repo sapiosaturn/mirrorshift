@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 import sys
 from textwrap import dedent
@@ -8,11 +9,13 @@ from mirrorshift.config import (
     CheckpointConfig,
     ConfigManager,
     DataConfig,
+    DebugConfig,
     ModelConfig,
     Run,
     TrainingConfig,
     validate_checkpoint_config,
     validate_data_config,
+    validate_debug_config,
     validate_model_config,
     validate_run_config,
     validate_training_config,
@@ -24,6 +27,8 @@ def test_config_manager_uses_default_toml_file() -> None:
     config = ConfigManager().parse_args([])
     assert config.model.vocab_size == 50281
     assert config.training.max_steps == 500
+    assert config.debug.seed is None
+    assert config.debug.deterministic is False
 
 
 def test_config_manager_reads_current_sys_argv(monkeypatch, tmp_path: Path) -> None:
@@ -118,6 +123,11 @@ def test_validate_training_config_invalid_device() -> None:
         validate_training_config(config)
 
 
+def test_validate_debug_config_negative_seed() -> None:
+    with pytest.raises(ValueError, match="debug.seed must be >= 0"):
+        validate_debug_config(DebugConfig(seed=-1))
+
+
 def test_validate_run_config_empty_log_dir() -> None:
     with pytest.raises(ValueError, match="run.log_dir must be non-empty"):
         validate_run_config(Run(log_dir=""))
@@ -192,6 +202,37 @@ def test_config_manager_parses_checkpoint_toml_and_cli(tmp_path: Path) -> None:
     assert config.checkpoint.interval == 20
     assert config.checkpoint.keep_latest_k == 3
     assert config.checkpoint.load_step == -1
+
+
+def test_config_manager_parses_debug_toml_and_cli(tmp_path: Path) -> None:
+    config_path = tmp_path / "debug.toml"
+    config_path.write_text(
+        dedent(
+            """
+            [debug]
+            seed = 7
+            """
+        )
+    )
+    config = ConfigManager().parse_args(
+        [
+            f"--job.config_file={config_path}",
+            "--debug.deterministic",
+        ]
+    )
+
+    assert config.debug.seed == 7
+    assert config.debug.deterministic is True
+
+
+def test_job_config_logs_resolved_config_unconditionally(caplog: pytest.LogCaptureFixture) -> None:
+    logger = logging.getLogger("mirrorshift.config.test")
+    config = ConfigManager().parse_args([])
+
+    with caplog.at_level(logging.INFO, logger=logger.name):
+        config.maybe_log(logger)
+
+    assert "Resolved config" in caplog.text
 
 
 def test_get_lr_schedule_unknown_name() -> None:

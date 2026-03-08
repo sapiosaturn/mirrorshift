@@ -12,6 +12,7 @@ from mirrorshift.config.job_config import (
     JobConfig,
     validate_checkpoint_config,
     validate_data_config,
+    validate_debug_config,
     validate_model_config,
     validate_run_config,
     validate_training_config,
@@ -101,5 +102,6 @@ class ConfigManager:
         validate_run_config(config.run)
         validate_model_config(config.model)
         validate_training_config(config.training)
+        validate_debug_config(config.debug)
         validate_data_config(config.data)
         validate_checkpoint_config(config.checkpoint)

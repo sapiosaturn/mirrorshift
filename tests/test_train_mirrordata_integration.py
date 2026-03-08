@@ -64,9 +64,6 @@ def test_main_trains_from_prebuilt_mirrordata_artifacts(tmp_path, monkeypatch) -
     config_path.write_text(
         dedent(
             f"""
-            [job]
-            print_config = false
-
             [run]
             spec = "causal_lm"
             log_dir = "{run_dir}"

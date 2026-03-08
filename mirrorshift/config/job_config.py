@@ -18,7 +18,6 @@ DEFAULT_TRAIN_CONFIG = "mirrorshift/config/train_configs/small.toml"
 @dataclass(frozen=True)
 class Job:
     config_file: str = DEFAULT_TRAIN_CONFIG
-    print_config: bool = True
 
 
 @dataclass(frozen=True)
@@ -63,6 +62,12 @@ class TrainingConfig:
 
 
 @dataclass(frozen=True)
+class DebugConfig:
+    seed: int | None = None
+    deterministic: bool = False
+
+
+@dataclass(frozen=True)
 class DataConfig:
     snapshot_path: str = "mirrorshift/datasets/example_train_snapshot"
     plan_path: str = "mirrorshift/datasets/example_train_plan_ctx64"
@@ -83,6 +88,7 @@ class JobConfig:
     run: Run = field(default_factory=Run)
     model: ModelConfig = field(default_factory=ModelConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
+    debug: DebugConfig = field(default_factory=DebugConfig)
     data: DataConfig = field(default_factory=DataConfig)
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
 
@@ -90,11 +96,10 @@ class JobConfig:
         return asdict(self)
 
     def maybe_log(self, logger: Any) -> None:
-        if self.job.print_config:
-            logger.info(
-                "Resolved config:\n%s",
-                json.dumps(self.to_dict(), indent=2, sort_keys=True),
-            )
+        logger.info(
+            "Resolved config:\n%s",
+            json.dumps(self.to_dict(), indent=2, sort_keys=True),
+        )
 
 
 def validate_training_config(config: TrainingConfig) -> None:
@@ -110,6 +115,11 @@ def validate_training_config(config: TrainingConfig) -> None:
         raise ValueError("training.max_steps must be > 0")
     if config.log_every <= 0:
         raise ValueError("training.log_every must be > 0")
+
+
+def validate_debug_config(config: DebugConfig) -> None:
+    if config.seed is not None and config.seed < 0:
+        raise ValueError("debug.seed must be >= 0 when provided")
 
 
 def validate_model_config(config: ModelConfig) -> None:

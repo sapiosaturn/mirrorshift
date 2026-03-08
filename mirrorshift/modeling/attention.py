@@ -32,6 +32,12 @@ class GroupedQueryAttention(nn.Module):
             embedding_dim, self.num_kv_heads * self.per_head_dim, bias=False
         )
         self.output_proj = nn.Linear(embedding_dim, embedding_dim, bias=False)
+
+    def init_weights(self) -> None:
+        self.Q.reset_parameters()
+        self.K.reset_parameters()
+        self.V.reset_parameters()
+        self.output_proj.reset_parameters()
         nn.init.zeros_(self.output_proj.weight)
 
     def apply_rope(self, x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
@@ -145,6 +151,13 @@ class MultiHeadLatentAttention(nn.Module):
         self.output_proj = nn.Linear(
             self.num_heads * self.v_head_dim, embedding_dim, bias=False
         )
+
+    def init_weights(self) -> None:
+        self.Q_a.reset_parameters()
+        self.Q_b.reset_parameters()
+        self.KV_a.reset_parameters()
+        self.KV_b.reset_parameters()
+        self.output_proj.reset_parameters()
         nn.init.zeros_(self.output_proj.weight)
 
     def apply_rope(self, x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:

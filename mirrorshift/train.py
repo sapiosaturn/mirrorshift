@@ -10,13 +10,18 @@ import torch
 import torch.optim as optim
 
 from mirrorshift.checkpointing import CheckpointManager, TrainState
-from mirrorshift.experiments import get_train_spec
 from mirrorshift.config import (
     ConfigManager,
     JobConfig,
     TrainingConfig,
 )
+from mirrorshift.experiments import get_train_spec
 from mirrorshift.metrics import MetricsLogger, build_metrics_logger
+from mirrorshift.runtime import (
+    build_meta_initialized_model,
+    resolve_device,
+    set_determinism,
+)
 from mirrorshift.run_manifest import create_run_artifacts, write_run_manifest
 from mirrorshift.utils import get_lr_schedule
 
@@ -24,18 +29,6 @@ BatchType = Tuple[torch.Tensor, torch.Tensor]
 LossFunction = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
 
 LOGGER = logging.getLogger("mirrorshift.train")
-
-
-def resolve_device(device_name: str) -> str:
-    if device_name == "cpu":
-        return "cpu"
-    if device_name == "cuda":
-        if not torch.cuda.is_available():
-            raise RuntimeError("CUDA device requested but torch.cuda.is_available() is False")
-        torch.set_float32_matmul_precision("high")
-        return "cuda"
-    raise ValueError("training.device must be 'cpu' or 'cuda'")
-
 
 def iter_batches(train_loader: Any) -> Iterator[BatchType]:
     if hasattr(train_loader, "next"):
@@ -163,6 +156,7 @@ def main() -> int:
     artifacts = create_run_artifacts(config)
     LOGGER.info("run_id=%s run_dir=%s", artifacts.run_id, artifacts.run_dir)
     device = resolve_device(config.training.device)
+    set_determinism(device, config.debug)
 
     train_spec = get_train_spec(config.run.spec)
     train_data = train_spec.build_data(config, artifacts.run_dir, device)
@@ -186,8 +180,7 @@ def main() -> int:
         max_steps=config.training.max_steps,
     )
 
-    model = train_spec.build_model(config.model)
-    model = model.to(device)
+    model = build_meta_initialized_model(train_spec.build_model, config.model, device)
     if config.training.compile:
         model = torch.compile(model)
 

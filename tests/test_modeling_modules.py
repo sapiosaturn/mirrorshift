@@ -58,6 +58,7 @@ def test_decoder_block_forward_shape() -> None:
         attention_block=attention,
         ffn=FFN(model_dim=config.embedding_dim, feedforward_dim=config.feedforward_dim),
     )
+    block.init_weights()
     x = torch.randn(2, 8, config.embedding_dim)
     freqs = precompute_freqs_cis(config.embedding_dim // config.num_heads, config.context_length)
     out = block(x, freqs)
@@ -71,7 +72,27 @@ def test_parallel_decoder_block_forward_shape() -> None:
         attention_block=attention,
         ffn=FFN(model_dim=config.embedding_dim, feedforward_dim=config.feedforward_dim),
     )
+    block.init_weights()
     x = torch.randn(2, 8, config.embedding_dim)
     freqs = precompute_freqs_cis(config.embedding_dim // config.num_heads, config.context_length)
     out = block(x, freqs)
     assert out.shape == x.shape
+
+
+def test_causal_transformer_meta_materialization_cpu() -> None:
+    config = build_model_config("gqa")
+    with torch.device("meta"):
+        model = CausalTransformer(config)
+
+    assert model.embedding_layer.weight.is_meta
+
+    model.to_empty(device="cpu")
+    with torch.no_grad():
+        model.init_weights()
+
+    x = torch.randint(0, 64, (2, 12))
+    logits = model(x)
+
+    assert not model.embedding_layer.weight.is_meta
+    assert model.freqs_cis.device.type == "cpu"
+    assert logits.shape == (2, 12, 64)
