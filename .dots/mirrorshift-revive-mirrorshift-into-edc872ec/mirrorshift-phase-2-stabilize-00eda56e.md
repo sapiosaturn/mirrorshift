@@ -8,4 +8,4 @@ blocks:
   - mirrorshift-phase-1-core-82e79815
 ---
 
-Done when smoke guardrails and improved data pipeline support reliable iterative research.
+Done when smoke guardrails and target-environment validation make the single-node experimentation loop reliable.
