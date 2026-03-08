@@ -1,4 +1,5 @@
 from pathlib import Path
+import sys
 from textwrap import dedent
 
 import pytest
@@ -6,10 +7,12 @@ import pytest
 from mirrorshift.config import (
     CheckpointConfig,
     ConfigManager,
+    DataConfig,
     ModelConfig,
     Run,
     TrainingConfig,
     validate_checkpoint_config,
+    validate_data_config,
     validate_model_config,
     validate_run_config,
     validate_training_config,
@@ -21,6 +24,27 @@ def test_config_manager_uses_default_toml_file() -> None:
     config = ConfigManager().parse_args([])
     assert config.model.vocab_size == 50281
     assert config.training.max_steps == 500
+
+
+def test_config_manager_reads_current_sys_argv(monkeypatch, tmp_path: Path) -> None:
+    config_path = tmp_path / "argv.toml"
+    config_path.write_text(
+        dedent(
+            """
+            [training]
+            max_steps = 9
+            """
+        )
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["mirrorshift-train", f"--job.config_file={config_path}"],
+    )
+
+    config = ConfigManager().parse_args()
+
+    assert config.training.max_steps == 9
 
 
 def test_config_manager_cli_overrides_toml(tmp_path: Path) -> None:
@@ -117,6 +141,34 @@ def test_validate_checkpoint_config_negative_keep_latest_k() -> None:
 def test_validate_checkpoint_config_requires_enable_for_load_step() -> None:
     with pytest.raises(ValueError, match="checkpoint.enable must be true"):
         validate_checkpoint_config(CheckpointConfig(load_step=-1))
+
+
+def test_validate_data_config_rejects_non_positive_max_documents() -> None:
+    with pytest.raises(ValueError, match="data.max_documents must be > 0"):
+        validate_data_config(DataConfig(max_documents=0))
+
+
+def test_config_manager_parses_data_toml_and_cli(tmp_path: Path) -> None:
+    config_path = tmp_path / "data.toml"
+    config_path.write_text(
+        dedent(
+            """
+            [data]
+            input_format = "parquet"
+            max_tokens_per_shard = 4096
+            """
+        )
+    )
+    config = ConfigManager().parse_args(
+        [
+            f"--job.config_file={config_path}",
+            "--data.max_documents=16",
+        ]
+    )
+
+    assert config.data.input_format == "parquet"
+    assert config.data.max_tokens_per_shard == 4096
+    assert config.data.max_documents == 16
 
 
 def test_config_manager_parses_checkpoint_toml_and_cli(tmp_path: Path) -> None:

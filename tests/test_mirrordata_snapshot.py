@@ -73,3 +73,23 @@ def test_snapshot_builder_and_reader_across_shards(tmp_path: Path) -> None:
     assert len(manifest.shards) == 3
     assert snapshot.read_tokens(0, 8).tolist() == [1, 2, 3, 4, 5, 6, 7, 8]
     assert snapshot.read_window(2, 4).tolist() == [3, 4, 5, 6]
+
+
+def test_snapshot_builder_allows_single_oversized_document(tmp_path: Path) -> None:
+    builder = SnapshotBuilder(
+        output_dir=tmp_path,
+        snapshot_id="oversized",
+        dataset_name="oversized",
+        split="train",
+        tokenizer_manifest=TokenizerManifest(backend="tiktoken", name="p50k_base", vocab_size=100),
+        max_tokens_per_shard=4,
+        token_dtype=np.dtype(np.uint32),
+    )
+    builder.write_document([1, 2, 3, 4, 5])
+    builder.write_document([6, 7])
+
+    manifest = builder.finalize()
+    snapshot = TokenSnapshot.open(tmp_path)
+
+    assert [shard.num_tokens for shard in manifest.shards] == [5, 2]
+    assert snapshot.read_tokens(0, 7).tolist() == [1, 2, 3, 4, 5, 6, 7]

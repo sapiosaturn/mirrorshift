@@ -3,8 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
-
-from .dataset import CausalLMSequenceDataset
+from torch.utils.data import Dataset
 
 
 @dataclass(frozen=True)
@@ -21,7 +20,7 @@ def _compute_rank_slice(global_batch_size: int, world_size: int, rank: int) -> _
 class DeterministicBatchLoader:
     def __init__(
         self,
-        dataset: CausalLMSequenceDataset,
+        dataset: Dataset[tuple[torch.Tensor, torch.Tensor]],
         *,
         global_batch_size: int,
         world_size: int = 1,

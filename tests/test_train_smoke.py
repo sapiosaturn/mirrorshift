@@ -2,6 +2,7 @@ import torch
 import pytest
 from torch.utils.data import DataLoader, Dataset, RandomSampler
 
+from mirrordata import DeterministicBatchLoader
 from mirrorshift.config import ModelConfig, TrainingConfig
 from mirrorshift.modeling.causal_transformers import CausalTransformer
 from mirrorshift.train import resolve_device, train
@@ -99,3 +100,47 @@ def test_train_cpu_smoke_single_digit_steps(tmp_path) -> None:
     assert final_step == training_config.max_steps
     assert metrics_logger.logged_steps[-1] == training_config.max_steps
     assert not torch.equal(initial_weight, model.lm_head.weight.detach())
+
+
+def test_train_cpu_smoke_with_mirrordata_batch_loader() -> None:
+    dataset = TinyTokenDataset()
+    model_config = tiny_model_config()
+    training_config = tiny_training_config()
+    model = CausalTransformer(model_config)
+
+    loader = DeterministicBatchLoader(
+        dataset,
+        global_batch_size=training_config.batch_size,
+        device="cpu",
+        wrap=True,
+    )
+    opt = torch.optim.AdamW(model.parameters(), lr=training_config.learning_rate)
+
+    class DummyMetricsLogger:
+        def __init__(self):
+            self.logged_steps: list[int] = []
+
+        def log(self, metrics: dict[str, float], step: int) -> None:
+            assert "train/loss" in metrics
+            self.logged_steps.append(step)
+
+        def close(self) -> None:
+            return None
+
+    metrics_logger = DummyMetricsLogger()
+
+    final_step = train(
+        model=model,
+        train_loader=loader,
+        opt=opt,
+        loss_fn=lambda logits, targets: torch.nn.functional.cross_entropy(
+            logits.reshape(-1, logits.size(-1)),
+            targets.reshape(-1),
+        ),
+        device="cpu",
+        training_config=training_config,
+        metrics_logger=metrics_logger,
+    )
+
+    assert final_step == training_config.max_steps
+    assert metrics_logger.logged_steps[-1] == training_config.max_steps

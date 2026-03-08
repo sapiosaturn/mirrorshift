@@ -4,11 +4,10 @@ import logging
 import math
 import time
 from collections import deque
-from typing import Callable, Iterator, Tuple
+from typing import Any, Callable, Iterator, Tuple
 
 import torch
 import torch.optim as optim
-from torch.utils.data import DataLoader, RandomSampler
 
 from mirrorshift.checkpointing import CheckpointManager, TrainState
 from mirrorshift.experiments import get_train_spec
@@ -38,15 +37,30 @@ def resolve_device(device_name: str) -> str:
     raise ValueError("training.device must be 'cpu' or 'cuda'")
 
 
-def iter_batches(train_loader: DataLoader) -> Iterator[BatchType]:
+def iter_batches(train_loader: Any) -> Iterator[BatchType]:
+    if hasattr(train_loader, "next"):
+        while True:
+            yield train_loader.next()
     while True:
         for batch in train_loader:
             yield batch
 
 
+def apply_resume_offset(train_loader: Any, resume_batch_offset: int) -> int:
+    if resume_batch_offset <= 0:
+        return 0
+
+    load_state_dict = getattr(train_loader, "load_state_dict", None)
+    global_batch_size = getattr(train_loader, "global_batch_size", None)
+    if callable(load_state_dict) and global_batch_size is not None:
+        load_state_dict({"global_sample_cursor": resume_batch_offset * int(global_batch_size)})
+        return 0
+    return resume_batch_offset
+
+
 def train(
     model: torch.nn.Module,
-    train_loader: DataLoader,
+    train_loader: Any,
     opt: optim.AdamW,
     loss_fn: LossFunction,
     device: str,
@@ -54,6 +68,7 @@ def train(
     metrics_logger: MetricsLogger,
     train_state: TrainState | None = None,
     checkpointer: CheckpointManager | None = None,
+    resume_batch_offset: int = 0,
 ) -> int:
     lr_schedule = get_lr_schedule(
         schedule=training_config.lr_schedule,
@@ -68,6 +83,9 @@ def train(
     model.train()
     if active_train_state.step >= training_config.max_steps:
         return active_train_state.step
+
+    for _ in range(apply_resume_offset(train_loader, resume_batch_offset)):
+        next(batch_iter)
 
     for global_step in range(active_train_state.step + 1, training_config.max_steps + 1):
         step_start_time = time.time()
@@ -134,31 +152,26 @@ def main() -> int:
     config.maybe_log(LOGGER)
     artifacts = create_run_artifacts(config)
     LOGGER.info("run_id=%s run_dir=%s", artifacts.run_id, artifacts.run_dir)
+    device = resolve_device(config.training.device)
 
     train_spec = get_train_spec(config.run.spec)
-    train_dataset = train_spec.build_dataset(config.run.dataset, config.model.context_length)
+    train_data = train_spec.build_data(config, artifacts.run_dir, device)
 
-    if train_dataset.get_vocab_size() != config.model.vocab_size:
+    if train_data.vocab_size != config.model.vocab_size:
         raise ValueError(
             "Dataset vocab size does not match model config vocab size: "
-            f"{train_dataset.get_vocab_size()} vs {config.model.vocab_size}"
+            f"{train_data.vocab_size} vs {config.model.vocab_size}"
         )
-    if len(train_dataset) < config.training.batch_size:
+    if train_data.dataset_size < config.training.batch_size:
         raise ValueError(
             "Dataset must have at least batch_size sequences. "
-            f"len(dataset)={len(train_dataset)} batch_size={config.training.batch_size}"
+            f"len(dataset)={train_data.dataset_size} batch_size={config.training.batch_size}"
         )
-
-    train_loader: DataLoader = DataLoader(
-        train_dataset,
-        batch_size=config.training.batch_size,
-        sampler=RandomSampler(train_dataset),
-    )
+    train_loader = train_data.train_loader
     if len(train_loader) == 0:
         raise ValueError("train_loader is empty for the provided configuration")
 
     model = train_spec.build_model(config.model)
-    device = resolve_device(config.training.device)
     model = model.to(device)
     if config.training.compile:
         model = torch.compile(model)
@@ -187,7 +200,7 @@ def main() -> int:
         write_run_manifest(
             artifacts=artifacts,
             config=config,
-            dataset_size=len(train_dataset),
+            dataset_size=train_data.dataset_size,
             trainable_params=trainable_params,
             device=device,
         )
@@ -200,7 +213,7 @@ def main() -> int:
 
     LOGGER.info(
         "dataset_size=%d trainable_params=%d device=%s max_steps=%d",
-        len(train_dataset),
+        train_data.dataset_size,
         trainable_params,
         device,
         config.training.max_steps,
@@ -222,6 +235,7 @@ def main() -> int:
             metrics_logger=metrics_logger,
             train_state=train_state,
             checkpointer=checkpointer,
+            resume_batch_offset=train_state.step if train_data.exact_resume else 0,
         )
     finally:
         metrics_logger.close()

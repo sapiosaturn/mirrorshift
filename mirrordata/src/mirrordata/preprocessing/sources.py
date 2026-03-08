@@ -22,18 +22,23 @@ class ParquetTextSource:
         *,
         text_column: str = "text",
         batch_size: int = 4096,
+        limit_documents: int | None = None,
     ) -> None:
         self.paths = expand_paths(paths)
         self.text_column = text_column
         self.batch_size = int(batch_size)
+        self.limit_documents = limit_documents
 
     def estimate_documents(self) -> int | None:
         total = 0
         for path in self.paths:
             total += pq.ParquetFile(path).metadata.num_rows
+        if self.limit_documents is not None:
+            return min(total, self.limit_documents)
         return total
 
     def __iter__(self) -> Iterator[Document]:
+        emitted = 0
         for path in self.paths:
             parquet = pq.ParquetFile(path)
             schema_names = parquet.schema_arrow.names
@@ -44,6 +49,8 @@ class ParquetTextSource:
             for batch in parquet.iter_batches(columns=[self.text_column], batch_size=self.batch_size):
                 texts = batch.column(0).to_pylist()
                 for local_index, text in enumerate(texts):
+                    if self.limit_documents is not None and emitted >= self.limit_documents:
+                        return
                     if text is None:
                         continue
                     yield Document(
@@ -51,4 +58,5 @@ class ParquetTextSource:
                         text=str(text),
                         metadata={"source_path": str(path), "row_index": row_offset + local_index},
                     )
+                    emitted += 1
                 row_offset += len(texts)

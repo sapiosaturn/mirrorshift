@@ -1,5 +1,7 @@
 from mirrorshift.config.job_config import (
     CheckpointConfig,
+    DataConfig,
+    DataInputFormat,
     DEFAULT_TRAIN_CONFIG,
     DeviceName,
     Job,
@@ -9,6 +11,7 @@ from mirrorshift.config.job_config import (
     ScheduleName,
     TrainingConfig,
     validate_checkpoint_config,
+    validate_data_config,
     validate_model_config,
     validate_run_config,
     validate_training_config,
@@ -18,6 +21,8 @@ from mirrorshift.config.manager import ConfigManager
 __all__ = [
     "ConfigManager",
     "CheckpointConfig",
+    "DataConfig",
+    "DataInputFormat",
     "DEFAULT_TRAIN_CONFIG",
     "DeviceName",
     "Job",
@@ -27,6 +32,7 @@ __all__ = [
     "ScheduleName",
     "TrainingConfig",
     "validate_checkpoint_config",
+    "validate_data_config",
     "validate_model_config",
     "validate_run_config",
     "validate_training_config",

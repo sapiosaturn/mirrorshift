@@ -11,6 +11,7 @@ ScheduleName = Literal[
     "wsd_cosine",
 ]
 DeviceName = Literal["cpu", "cuda"]
+DataInputFormat = Literal["auto", "text", "parquet"]
 
 DEFAULT_TRAIN_CONFIG = "mirrorshift/config/train_configs/small.toml"
 
@@ -64,6 +65,18 @@ class TrainingConfig:
 
 
 @dataclass(frozen=True)
+class DataConfig:
+    input_format: DataInputFormat = "auto"
+    text_column: str = "text"
+    tokenizer_name: str = "p50k_base"
+    max_tokens_per_shard: int = 200_000
+    plan_stride: int | None = None
+    shuffle: bool = True
+    shuffle_seed: int = 0
+    max_documents: int | None = None
+
+
+@dataclass(frozen=True)
 class CheckpointConfig:
     enable: bool = False
     folder: str = "checkpoints"
@@ -78,6 +91,7 @@ class JobConfig:
     run: Run = field(default_factory=Run)
     model: ModelConfig = field(default_factory=ModelConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
+    data: DataConfig = field(default_factory=DataConfig)
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
 
     def to_dict(self) -> dict[str, Any]:
@@ -173,3 +187,18 @@ def validate_checkpoint_config(config: CheckpointConfig) -> None:
         raise ValueError("checkpoint.load_step must be -1, >= 0, or omitted")
     if config.load_step is not None and not config.enable:
         raise ValueError("checkpoint.enable must be true when checkpoint.load_step is set")
+
+
+def validate_data_config(config: DataConfig) -> None:
+    if config.input_format not in {"auto", "text", "parquet"}:
+        raise ValueError("data.input_format must be 'auto', 'text', or 'parquet'")
+    if not config.text_column:
+        raise ValueError("data.text_column must be non-empty")
+    if not config.tokenizer_name:
+        raise ValueError("data.tokenizer_name must be non-empty")
+    if config.max_tokens_per_shard <= 0:
+        raise ValueError("data.max_tokens_per_shard must be > 0")
+    if config.plan_stride is not None and config.plan_stride <= 0:
+        raise ValueError("data.plan_stride must be > 0 when provided")
+    if config.max_documents is not None and config.max_documents <= 0:
+        raise ValueError("data.max_documents must be > 0 when provided")

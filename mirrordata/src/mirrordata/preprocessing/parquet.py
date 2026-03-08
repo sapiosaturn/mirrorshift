@@ -28,6 +28,7 @@ class ParquetSnapshotConfig:
     batch_size: int = 4096
     append_eos_token: bool = True
     token_dtype: str = "uint32"
+    max_documents: int | None = None
     metadata: dict[str, str] = field(default_factory=dict)
 
 
@@ -52,6 +53,7 @@ class ParquetSnapshotPreprocessor:
             self.config.input_paths,
             text_column=self.config.text_column,
             batch_size=self.config.batch_size,
+            limit_documents=self.config.max_documents,
         )
         builder = SnapshotBuilder(
             output_dir=self.config.output_dir,

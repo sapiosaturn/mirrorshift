@@ -14,6 +14,7 @@ from mirrorshift.modeling.causal_transformers import (
 from mirrorshift.config import (
     CheckpointConfig,
     ConfigManager,
+    DataConfig,
     JobConfig,
     ModelConfig,
     TrainingConfig,
@@ -24,6 +25,7 @@ __all__ = [
     "CausalTransformer",
     "CheckpointConfig",
     "ConfigManager",
+    "DataConfig",
     "JobConfig",
     "ModelConfig",
     "TrainingConfig",

@@ -57,13 +57,21 @@ class TokenShardWriter:
     def can_fit(self, num_tokens: int) -> bool:
         return self._num_tokens + int(num_tokens) <= self.max_tokens
 
-    def add_document(self, token_ids: Sequence[int]) -> bool:
+    def add_document(
+        self,
+        token_ids: Sequence[int],
+        *,
+        allow_oversized_empty: bool = False,
+    ) -> bool:
         token_array = np.asarray(token_ids, dtype=self.dtype)
         if token_array.ndim != 1:
             raise ValueError("token_ids must be one-dimensional")
         if token_array.size == 0:
             return True
         if not self.can_fit(int(token_array.size)):
+            if not (allow_oversized_empty and self._num_documents == 0):
+                return False
+        if self._num_tokens > 0 and not self.can_fit(int(token_array.size)):
             return False
 
         start = self._num_tokens
@@ -141,13 +149,13 @@ class SnapshotBuilder:
     def write_document(self, token_ids: Sequence[int]) -> None:
         if len(token_ids) == 0:
             return
-        if not self._current_writer.add_document(token_ids):
+        if not self._current_writer.can_fit(len(token_ids)) and self._current_writer.num_documents > 0:
             self._roll_shard()
-            if not self._current_writer.add_document(token_ids):
-                raise ValueError(
-                    f"document with {len(token_ids)} tokens exceeds max_tokens_per_shard="
-                    f"{self.max_tokens_per_shard}"
-                )
+        if not self._current_writer.add_document(token_ids, allow_oversized_empty=True):
+            raise ValueError(
+                f"document with {len(token_ids)} tokens could not be written to shard "
+                f"with max_tokens_per_shard={self.max_tokens_per_shard}"
+            )
         self._total_documents += 1
         self._total_tokens += len(token_ids)
 

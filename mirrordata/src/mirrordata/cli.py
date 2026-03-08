@@ -20,6 +20,7 @@ def _cmd_prep_parquet(args: argparse.Namespace) -> int:
             tokenizer_name=args.tokenizer_name,
             max_tokens_per_shard=args.max_tokens_per_shard,
             min_document_tokens=args.min_document_tokens,
+            max_documents=args.max_documents,
         )
     )
     print(f"wrote snapshot: {Path(args.output_dir) / 'manifest.json'}")
@@ -68,6 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     prep.add_argument("--tokenizer-name", default="p50k_base")
     prep.add_argument("--max-tokens-per-shard", type=int, default=50_000_000)
     prep.add_argument("--min-document-tokens", type=int, default=1)
+    prep.add_argument("--max-documents", type=int)
     prep.set_defaults(func=_cmd_prep_parquet)
 
     plan = subparsers.add_parser("build-plan")
