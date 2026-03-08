@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,6 +37,8 @@ class SequencePlanManifest:
     sample_starts_path: str
     sample_order_path: str
     created_at: str
+    sample_starts_checksum_sha256: str | None = None
+    sample_order_checksum_sha256: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -49,9 +52,16 @@ class SequencePlanManifest:
             "shuffle_seed": self.shuffle_seed,
             "sample_starts_path": self.sample_starts_path,
             "sample_order_path": self.sample_order_path,
+            "sample_starts_checksum_sha256": self.sample_starts_checksum_sha256,
+            "sample_order_checksum_sha256": self.sample_order_checksum_sha256,
             "created_at": self.created_at,
             "metadata": self.metadata,
         }
+
+    def fingerprint(self) -> str:
+        return hashlib.sha256(
+            json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), indent=2, sort_keys=True) + "\n"
@@ -71,6 +81,8 @@ class SequencePlanManifest:
             shuffle_seed=int(data["shuffle_seed"]),
             sample_starts_path=str(data["sample_starts_path"]),
             sample_order_path=str(data["sample_order_path"]),
+            sample_starts_checksum_sha256=data.get("sample_starts_checksum_sha256"),
+            sample_order_checksum_sha256=data.get("sample_order_checksum_sha256"),
             created_at=str(data["created_at"]),
             metadata=dict(data.get("metadata", {})),
         )
@@ -124,6 +136,8 @@ class SequencePlanBuilder:
             shuffle_seed=self.spec.shuffle_seed,
             sample_starts_path=starts_path.name,
             sample_order_path=order_path.name,
+            sample_starts_checksum_sha256=_sha256_file(starts_path),
+            sample_order_checksum_sha256=_sha256_file(order_path),
             created_at=datetime.now(timezone.utc).isoformat(),
             metadata={"snapshot_path": str(Path(self.spec.snapshot_path))},
         )
@@ -160,3 +174,11 @@ class SequencePlan:
 
 def build_sequence_plan(spec: SequencePlanSpec) -> SequencePlanManifest:
     return SequencePlanBuilder(spec).run()
+
+
+def _sha256_file(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()

@@ -96,6 +96,14 @@ mirrordata build-plan \
   --sequence-length 64
 ```
 
+Verify the resulting artifacts:
+
+```bash
+mirrordata verify \
+  --snapshot-path /tmp/example-train-snapshot \
+  --plan-path /tmp/example-train-plan-ctx64
+```
+
 ### Module Run
 
 ```bash

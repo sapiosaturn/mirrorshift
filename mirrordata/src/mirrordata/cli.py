@@ -6,6 +6,7 @@ from pathlib import Path
 from mirrordata.planning import SequencePlanSpec, build_sequence_plan
 from mirrordata.preprocessing import ParquetSnapshotConfig, build_snapshot_from_parquet
 from mirrordata.snapshot import SnapshotManifest
+from mirrordata.verification import verify_plan, verify_snapshot
 
 
 def _cmd_prep_parquet(args: argparse.Namespace) -> int:
@@ -55,6 +56,34 @@ def _cmd_info(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_verify(args: argparse.Namespace) -> int:
+    ok_snapshot, snapshot_errors = verify_snapshot(
+        args.snapshot_path,
+        check_checksums=not args.no_checksums,
+    )
+    all_errors = list(snapshot_errors)
+    if args.plan_path is not None:
+        ok_plan, plan_errors = verify_plan(
+            args.plan_path,
+            snapshot_path=args.snapshot_path,
+            check_checksums=not args.no_checksums,
+        )
+        all_errors.extend(plan_errors)
+    else:
+        ok_plan = True
+
+    if all_errors:
+        for error in all_errors:
+            print(f"ERROR: {error}")
+        return 1
+
+    if args.plan_path is not None:
+        print("snapshot and plan verified")
+    else:
+        print("snapshot verified")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mirrordata")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -84,6 +113,12 @@ def build_parser() -> argparse.ArgumentParser:
     info = subparsers.add_parser("info")
     info.add_argument("manifest_path")
     info.set_defaults(func=_cmd_info)
+
+    verify = subparsers.add_parser("verify")
+    verify.add_argument("--snapshot-path", required=True)
+    verify.add_argument("--plan-path")
+    verify.add_argument("--no-checksums", action="store_true")
+    verify.set_defaults(func=_cmd_verify)
     return parser
 
 

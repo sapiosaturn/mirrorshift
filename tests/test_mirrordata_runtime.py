@@ -3,6 +3,7 @@ from pathlib import Path
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 import torch
 
 from mirrordata import (
@@ -85,6 +86,43 @@ def test_causal_lm_sequence_dataset_returns_shifted_pairs(tmp_path: Path) -> Non
     assert torch.equal(x, torch.tensor(expected[:-1], dtype=torch.long))
     assert torch.equal(y, torch.tensor(expected[1:], dtype=torch.long))
     assert len(dataset) == plan.manifest.num_samples
+
+
+def test_causal_lm_sequence_dataset_rejects_snapshot_plan_mismatch(tmp_path: Path) -> None:
+    parquet_path = tmp_path / "train.parquet"
+    _write_parquet(parquet_path, ["one two three four five six seven eight nine"])
+    build_snapshot_from_parquet(
+        ParquetSnapshotConfig(
+            input_paths=(str(parquet_path),),
+            output_dir=str(tmp_path / "snapshot-a"),
+            snapshot_id="snapshot-a",
+            dataset_name="tiny",
+            split="train",
+            max_tokens_per_shard=32,
+        )
+    )
+    build_snapshot_from_parquet(
+        ParquetSnapshotConfig(
+            input_paths=(str(parquet_path),),
+            output_dir=str(tmp_path / "snapshot-b"),
+            snapshot_id="snapshot-b",
+            dataset_name="tiny",
+            split="train",
+            max_tokens_per_shard=32,
+        )
+    )
+    build_sequence_plan(
+        SequencePlanSpec(
+            snapshot_path=str(tmp_path / "snapshot-a"),
+            output_dir=str(tmp_path / "plan-a"),
+            sequence_length=4,
+            shuffle=True,
+            shuffle_seed=123,
+        )
+    )
+
+    with pytest.raises(ValueError, match="snapshot_id mismatch"):
+        CausalLMSequenceDataset(str(tmp_path / "snapshot-b"), str(tmp_path / "plan-a"))
 
 
 def test_deterministic_batch_loader_resume(tmp_path: Path) -> None:

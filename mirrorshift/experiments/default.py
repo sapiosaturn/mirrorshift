@@ -1,5 +1,6 @@
 import torch
 import torch.nn.functional as F
+from pathlib import Path
 
 from mirrordata import (
     CausalLMSequenceDataset,
@@ -17,9 +18,15 @@ def build_default_model(model_config: ModelConfig) -> torch.nn.Module:
 
 def build_default_data(config: JobConfig, run_dir, device: str) -> TrainDataBundle:
     _ = run_dir
+    snapshot_path = Path(config.data.snapshot_path)
+    plan_path = Path(config.data.plan_path)
+    if not snapshot_path.exists():
+        raise FileNotFoundError(f"Snapshot path does not exist: {snapshot_path}")
+    if not plan_path.exists():
+        raise FileNotFoundError(f"Plan path does not exist: {plan_path}")
     train_dataset = CausalLMSequenceDataset(
-        config.data.snapshot_path,
-        config.data.plan_path,
+        str(snapshot_path),
+        str(plan_path),
     )
     if train_dataset.sequence_length != config.model.context_length:
         raise ValueError(
@@ -37,6 +44,7 @@ def build_default_data(config: JobConfig, run_dir, device: str) -> TrainDataBund
         train_loader=train_loader,
         dataset_size=len(train_dataset),
         vocab_size=train_dataset.get_vocab_size(),
+        data_identity=train_dataset.identity().to_dict(),
         exact_resume=True,
     )
 

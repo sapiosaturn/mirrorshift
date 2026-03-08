@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -71,6 +72,11 @@ class SnapshotManifest:
     total_documents: int
     created_at: str
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def fingerprint(self) -> str:
+        return hashlib.sha256(
+            json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
 
     def to_dict(self) -> dict[str, Any]:
         return {

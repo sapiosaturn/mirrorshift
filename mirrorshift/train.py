@@ -58,6 +58,16 @@ def apply_resume_offset(train_loader: Any, resume_batch_offset: int) -> int:
     return resume_batch_offset
 
 
+def log_data_preflight(*, dataset_size: int, batch_size: int, max_steps: int) -> None:
+    required_sequences = batch_size * max_steps
+    if dataset_size < required_sequences:
+        LOGGER.warning(
+            "Dataset will wrap during training: available_sequences=%d required_sequences=%d",
+            dataset_size,
+            required_sequences,
+        )
+
+
 def train(
     model: torch.nn.Module,
     train_loader: Any,
@@ -170,6 +180,11 @@ def main() -> int:
     train_loader = train_data.train_loader
     if len(train_loader) == 0:
         raise ValueError("train_loader is empty for the provided configuration")
+    log_data_preflight(
+        dataset_size=train_data.dataset_size,
+        batch_size=config.training.batch_size,
+        max_steps=config.training.max_steps,
+    )
 
     model = train_spec.build_model(config.model)
     model = model.to(device)
@@ -184,6 +199,8 @@ def main() -> int:
         model=model,
         optimizer=opt,
         train_state=train_state,
+        train_loader=train_loader,
+        data_identity=train_data.data_identity,
     )
     if config.checkpoint.load_step is not None:
         checkpointer.load()
@@ -235,7 +252,11 @@ def main() -> int:
             metrics_logger=metrics_logger,
             train_state=train_state,
             checkpointer=checkpointer,
-            resume_batch_offset=train_state.step if train_data.exact_resume else 0,
+            resume_batch_offset=(
+                0
+                if checkpointer.restored_loader_state
+                else train_state.step if train_data.exact_resume else 0
+            ),
         )
     finally:
         metrics_logger.close()

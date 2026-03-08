@@ -1,11 +1,31 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import torch
 from torch.utils.data import Dataset
 
 from mirrordata.planning import SequencePlan
 from mirrordata.snapshot import TokenSnapshot
 from mirrordata.tokenizers import TiktokenTokenizer
+
+
+@dataclass(frozen=True)
+class DatasetIdentity:
+    snapshot_id: str
+    snapshot_fingerprint: str
+    plan_fingerprint: str
+    sequence_length: int
+    dataset_size: int
+
+    def to_dict(self) -> dict[str, int | str]:
+        return {
+            "snapshot_id": self.snapshot_id,
+            "snapshot_fingerprint": self.snapshot_fingerprint,
+            "plan_fingerprint": self.plan_fingerprint,
+            "sequence_length": self.sequence_length,
+            "dataset_size": self.dataset_size,
+        }
 
 
 class CausalLMSequenceDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
@@ -42,3 +62,12 @@ class CausalLMSequenceDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
 
     def detokenize(self, token_ids: list[int]) -> str:
         return self.tokenizer.decode(token_ids)
+
+    def identity(self) -> DatasetIdentity:
+        return DatasetIdentity(
+            snapshot_id=self.snapshot.manifest.snapshot_id,
+            snapshot_fingerprint=self.snapshot.manifest.fingerprint(),
+            plan_fingerprint=self.plan.manifest.fingerprint(),
+            sequence_length=self.sequence_length,
+            dataset_size=len(self),
+        )

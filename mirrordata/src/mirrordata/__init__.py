@@ -11,7 +11,7 @@ from .preprocessing import (
     ParquetTextSource,
     build_snapshot_from_parquet,
 )
-from .runtime import CausalLMSequenceDataset, DeterministicBatchLoader
+from .runtime import CausalLMSequenceDataset, DatasetIdentity, DeterministicBatchLoader
 from .snapshot import (
     IndexHeader,
     IndexReader,
@@ -23,9 +23,11 @@ from .snapshot import (
     TokenizerManifest,
 )
 from .tokenizers import TiktokenEncoding, TiktokenTokenizer
+from .verification import verify_plan, verify_snapshot
 
 __all__ = [
     "CausalLMSequenceDataset",
+    "DatasetIdentity",
     "DeterministicBatchLoader",
     "IndexHeader",
     "IndexReader",
@@ -46,4 +48,6 @@ __all__ = [
     "TokenizerManifest",
     "build_sequence_plan",
     "build_snapshot_from_parquet",
+    "verify_plan",
+    "verify_snapshot",
 ]

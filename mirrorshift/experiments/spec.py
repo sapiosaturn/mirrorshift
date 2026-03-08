@@ -16,6 +16,7 @@ class TrainDataBundle:
     train_loader: Any
     dataset_size: int
     vocab_size: int
+    data_identity: dict[str, int | str] | None = None
     exact_resume: bool = False
 
 
