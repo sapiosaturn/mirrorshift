@@ -16,6 +16,11 @@ class CausalLMSequenceDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
     ) -> None:
         self.snapshot = TokenSnapshot.open(snapshot_path)
         self.plan = SequencePlan.open(plan_path)
+        if self.snapshot.manifest.snapshot_id != self.plan.manifest.snapshot_id:
+            raise ValueError(
+                "snapshot_id mismatch between snapshot and plan: "
+                f"{self.snapshot.manifest.snapshot_id} vs {self.plan.manifest.snapshot_id}"
+            )
         self.sequence_length = self.plan.manifest.sequence_length
         self.tokenizer = TiktokenTokenizer(self.snapshot.manifest.tokenizer.name)
 

@@ -6,6 +6,12 @@ from textwrap import dedent
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from mirrordata import (
+    ParquetSnapshotConfig,
+    SequencePlanSpec,
+    build_sequence_plan,
+    build_snapshot_from_parquet,
+)
 from mirrorshift.train import main
 
 
@@ -14,7 +20,33 @@ def _write_parquet(path: Path, texts: list[str]) -> None:
     pq.write_table(table, path, row_group_size=2)
 
 
-def test_main_trains_from_parquet_via_mirrordata(tmp_path, monkeypatch) -> None:
+def _build_snapshot_and_plan(parquet_path: Path, tmp_path: Path) -> tuple[Path, Path]:
+    snapshot_dir = tmp_path / "snapshot"
+    plan_dir = tmp_path / "plan"
+    build_snapshot_from_parquet(
+        ParquetSnapshotConfig(
+            input_paths=(str(parquet_path),),
+            output_dir=str(snapshot_dir),
+            snapshot_id="integration-snapshot",
+            dataset_name="integration",
+            split="train",
+            max_tokens_per_shard=256,
+            max_documents=4,
+        )
+    )
+    build_sequence_plan(
+        SequencePlanSpec(
+            snapshot_path=str(snapshot_dir),
+            output_dir=str(plan_dir),
+            sequence_length=8,
+            shuffle=True,
+            shuffle_seed=7,
+        )
+    )
+    return snapshot_dir, plan_dir
+
+
+def test_main_trains_from_prebuilt_mirrordata_artifacts(tmp_path, monkeypatch) -> None:
     parquet_path = tmp_path / "train.parquet"
     _write_parquet(
         parquet_path,
@@ -25,6 +57,7 @@ def test_main_trains_from_parquet_via_mirrordata(tmp_path, monkeypatch) -> None:
             "tempor incididunt ut labore et dolore magna aliqua ut enim ad minim",
         ],
     )
+    snapshot_dir, plan_dir = _build_snapshot_and_plan(parquet_path, tmp_path)
 
     config_path = tmp_path / "train.toml"
     run_dir = tmp_path / "runs"
@@ -35,7 +68,6 @@ def test_main_trains_from_parquet_via_mirrordata(tmp_path, monkeypatch) -> None:
             print_config = false
 
             [run]
-            dataset = "{parquet_path}"
             spec = "causal_lm"
             log_dir = "{run_dir}"
             id = "parquet-smoke"
@@ -62,10 +94,8 @@ def test_main_trains_from_parquet_via_mirrordata(tmp_path, monkeypatch) -> None:
             log_every = 1
 
             [data]
-            max_documents = 4
-            max_tokens_per_shard = 256
-            shuffle = true
-            shuffle_seed = 7
+            snapshot_path = "{snapshot_dir}"
+            plan_path = "{plan_dir}"
             """
         )
     )
@@ -79,14 +109,12 @@ def test_main_trains_from_parquet_via_mirrordata(tmp_path, monkeypatch) -> None:
     assert main() == 0
 
     output_run_dir = run_dir / "parquet-smoke"
-    snapshot_manifest = output_run_dir / "data" / "snapshot" / "manifest.json"
-    plan_manifest = output_run_dir / "data" / "plan" / "plan.json"
     run_manifest = output_run_dir / "manifest.json"
 
-    assert snapshot_manifest.exists()
-    assert plan_manifest.exists()
     assert run_manifest.exists()
+    assert not (output_run_dir / "data").exists()
 
     manifest_payload = json.loads(run_manifest.read_text())
-    assert manifest_payload["dataset"] == str(parquet_path)
+    assert manifest_payload["data_snapshot_path"] == str(snapshot_dir)
+    assert manifest_payload["data_plan_path"] == str(plan_dir)
     assert manifest_payload["dataset_size"] > 0

@@ -28,6 +28,8 @@ mirrorshift/
       small.toml
   datasets/
     example_train.parquet
+    example_train_snapshot/
+    example_train_plan_ctx64/
 ```
 
 ## Module Map
@@ -43,7 +45,9 @@ mirrorshift/
 - `mirrorshift/experiments/spec.py`: experiment contract (`TrainSpec`) for model/data/loss composition.
 - `mirrorshift/experiments/default.py`: default causal LM experiment wiring.
 - `mirrorshift/config/train_configs/small.toml`: default unified run/model/training config.
-- `mirrorshift/datasets/example_train.parquet`: sample parquet training corpus with a `text` column.
+- `mirrorshift/datasets/example_train.parquet`: sample parquet source corpus for preprocessing examples.
+- `mirrorshift/datasets/example_train_snapshot/`: tracked preprocessed snapshot used by the default training config.
+- `mirrorshift/datasets/example_train_plan_ctx64/`: tracked sequence plan for `context_length = 64`.
 
 ## Installation
 
@@ -70,12 +74,35 @@ mirrorshift-train --job.config_file mirrorshift/config/train_configs/small.toml 
                   --training.log_every 10
 ```
 
+The default config already points at prebuilt `mirrordata` artifacts.
+
+### Preprocessing
+
+Build a snapshot from parquet:
+
+```bash
+mirrordata prep-parquet mirrorshift/datasets/example_train.parquet \
+  --output-dir /tmp/example-train-snapshot \
+  --snapshot-id example-train \
+  --dataset-name example-train
+```
+
+Build a plan for a specific context length:
+
+```bash
+mirrordata build-plan \
+  --snapshot-path /tmp/example-train-snapshot \
+  --output-dir /tmp/example-train-plan-ctx64 \
+  --sequence-length 64
+```
+
 ### Module Run
 
 ```bash
 python3 -m mirrorshift.train --job.config_file mirrorshift/config/train_configs/small.toml \
                              --training.max_steps 100 \
-                             --run.dataset mirrorshift/datasets/example_train.parquet
+                             --data.snapshot_path /tmp/example-train-snapshot \
+                             --data.plan_path /tmp/example-train-plan-ctx64
 ```
 
 ## Monitoring
@@ -97,7 +124,7 @@ runs/<run_id>/
 ```
 
 - `config.json`: resolved dataclass config snapshot.
-- `manifest.json`: run metadata (dataset, device, params, argv, paths).
+- `manifest.json`: run metadata (snapshot/plan paths, device, params, argv, paths).
 - metrics: logged to Weights & Biases.
 
 Set a fixed run id with `--run.id <name>` or let mirrorshift auto-generate one.

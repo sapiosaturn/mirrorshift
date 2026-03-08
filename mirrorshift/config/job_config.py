@@ -2,7 +2,6 @@
 
 import json
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
 from typing import Any, Literal
 
 ScheduleName = Literal[
@@ -24,7 +23,6 @@ class Job:
 
 @dataclass(frozen=True)
 class Run:
-    dataset: str = "mirrorshift/datasets/example_train.parquet"
     spec: str = "causal_lm"
     log_dir: str = "runs"
     id: str | None = None
@@ -66,13 +64,8 @@ class TrainingConfig:
 
 @dataclass(frozen=True)
 class DataConfig:
-    text_column: str = "text"
-    tokenizer_name: str = "p50k_base"
-    max_tokens_per_shard: int = 200_000
-    plan_stride: int | None = None
-    shuffle: bool = True
-    shuffle_seed: int = 0
-    max_documents: int | None = None
+    snapshot_path: str = "mirrorshift/datasets/example_train_snapshot"
+    plan_path: str = "mirrorshift/datasets/example_train_plan_ctx64"
 
 
 @dataclass(frozen=True)
@@ -157,10 +150,6 @@ def validate_model_config(config: ModelConfig) -> None:
 
 
 def validate_run_config(config: Run) -> None:
-    if not config.dataset:
-        raise ValueError("run.dataset must be non-empty")
-    if Path(config.dataset).suffix.lower() != ".parquet":
-        raise ValueError("run.dataset must point to a parquet file")
     if not config.spec:
         raise ValueError("run.spec must be non-empty")
     if not config.log_dir:
@@ -191,13 +180,7 @@ def validate_checkpoint_config(config: CheckpointConfig) -> None:
 
 
 def validate_data_config(config: DataConfig) -> None:
-    if not config.text_column:
-        raise ValueError("data.text_column must be non-empty")
-    if not config.tokenizer_name:
-        raise ValueError("data.tokenizer_name must be non-empty")
-    if config.max_tokens_per_shard <= 0:
-        raise ValueError("data.max_tokens_per_shard must be > 0")
-    if config.plan_stride is not None and config.plan_stride <= 0:
-        raise ValueError("data.plan_stride must be > 0 when provided")
-    if config.max_documents is not None and config.max_documents <= 0:
-        raise ValueError("data.max_documents must be > 0 when provided")
+    if not config.snapshot_path:
+        raise ValueError("data.snapshot_path must be non-empty")
+    if not config.plan_path:
+        raise ValueError("data.plan_path must be non-empty")

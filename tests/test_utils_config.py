@@ -123,11 +123,6 @@ def test_validate_run_config_empty_log_dir() -> None:
         validate_run_config(Run(log_dir=""))
 
 
-def test_validate_run_config_rejects_non_parquet_dataset() -> None:
-    with pytest.raises(ValueError, match="parquet file"):
-        validate_run_config(Run(dataset="mirrorshift/datasets/example_train.txt"))
-
-
 def test_validate_run_config_empty_run_id_when_set() -> None:
     with pytest.raises(ValueError, match="run.id must be non-empty when provided"):
         validate_run_config(Run(id=""))
@@ -148,9 +143,9 @@ def test_validate_checkpoint_config_requires_enable_for_load_step() -> None:
         validate_checkpoint_config(CheckpointConfig(load_step=-1))
 
 
-def test_validate_data_config_rejects_non_positive_max_documents() -> None:
-    with pytest.raises(ValueError, match="data.max_documents must be > 0"):
-        validate_data_config(DataConfig(max_documents=0))
+def test_validate_data_config_rejects_empty_snapshot_path() -> None:
+    with pytest.raises(ValueError, match="data.snapshot_path must be non-empty"):
+        validate_data_config(DataConfig(snapshot_path=""))
 
 
 def test_config_manager_parses_data_toml_and_cli(tmp_path: Path) -> None:
@@ -159,21 +154,19 @@ def test_config_manager_parses_data_toml_and_cli(tmp_path: Path) -> None:
         dedent(
             """
             [data]
-            text_column = "body"
-            max_tokens_per_shard = 4096
+            snapshot_path = "snapshot-root"
             """
         )
     )
     config = ConfigManager().parse_args(
         [
             f"--job.config_file={config_path}",
-            "--data.max_documents=16",
+            "--data.plan_path=plan-root",
         ]
     )
 
-    assert config.data.text_column == "body"
-    assert config.data.max_tokens_per_shard == 4096
-    assert config.data.max_documents == 16
+    assert config.data.snapshot_path == "snapshot-root"
+    assert config.data.plan_path == "plan-root"
 
 
 def test_config_manager_parses_checkpoint_toml_and_cli(tmp_path: Path) -> None:

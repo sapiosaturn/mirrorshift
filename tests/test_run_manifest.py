@@ -82,6 +82,8 @@ def test_write_run_manifest_is_immutable(tmp_path) -> None:
     assert manifest["dataset_size"] == 123
     assert manifest["trainable_params"] == 456
     assert manifest["device"] == "cpu"
+    assert manifest["data_snapshot_path"] == config.data.snapshot_path
+    assert manifest["data_plan_path"] == config.data.plan_path
     assert manifest["wandb_project"] == "mirrorshift"
     assert manifest["wandb_mode"] == "online"
 
