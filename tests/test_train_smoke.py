@@ -75,7 +75,7 @@ def test_train_cpu_smoke_single_digit_steps(tmp_path) -> None:
             self.logged_steps: list[int] = []
 
         def log(self, metrics: dict[str, float], step: int) -> None:
-            assert "train/loss" in metrics
+            assert set(metrics) == {"train/loss"}
             self.logged_steps.append(step)
 
         def close(self) -> None:
@@ -120,7 +120,7 @@ def test_train_cpu_smoke_with_mirrordata_batch_loader() -> None:
             self.logged_steps: list[int] = []
 
         def log(self, metrics: dict[str, float], step: int) -> None:
-            assert "train/loss" in metrics
+            assert set(metrics) == {"train/loss"}
             self.logged_steps.append(step)
 
         def close(self) -> None:

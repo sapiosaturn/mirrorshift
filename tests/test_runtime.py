@@ -5,7 +5,12 @@ import torch
 
 from mirrorshift.config import DebugConfig, ModelConfig
 from mirrorshift.modeling.causal_transformers import CausalTransformer
-from mirrorshift.runtime import build_meta_initialized_model, set_determinism
+from mirrorshift.runtime import (
+    build_meta_initialized_model,
+    build_meta_model,
+    materialize_initialized_model,
+    set_determinism,
+)
 
 
 def tiny_model_config() -> ModelConfig:
@@ -56,3 +61,13 @@ def test_build_meta_initialized_model_materializes_weights() -> None:
     x = torch.randint(0, 32, (2, 8))
     logits = model(x)
     assert logits.shape == (2, 8, 32)
+
+
+def test_build_meta_model_stays_on_meta_until_materialized() -> None:
+    model = build_meta_model(CausalTransformer, tiny_model_config())
+
+    assert model.embedding_layer.weight.is_meta
+
+    materialized = materialize_initialized_model(model, "cpu")
+    assert materialized is model
+    assert not model.embedding_layer.weight.is_meta

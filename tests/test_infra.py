@@ -20,6 +20,7 @@ from mirrorshift.infra.distributed import build_runtime_context
 from mirrorshift.infra.parallel_dims import ParallelDims
 from mirrorshift.infra.parallelize import apply_ddp, apply_fsdp
 from mirrorshift.modeling.causal_transformers import CausalTransformer
+from mirrorshift.runtime import materialize_initialized_model
 
 
 def tiny_model_config() -> ModelConfig:
@@ -146,6 +147,26 @@ def test_apply_fsdp_one_rank_smoke() -> None:
             runtime_context,
             ParallelismConfig(),
         )
+
+        x = torch.randint(0, 32, (2, 8))
+        y = model(x)
+        y.sum().backward()
+
+        assert y.shape == (2, 8, 32)
+
+
+def test_apply_fsdp_on_meta_model_materializes_after_wrapping() -> None:
+    with single_rank_process_group():
+        runtime_context = _single_rank_runtime_context()
+        with torch.device("meta"):
+            model = CausalTransformer(tiny_model_config())
+
+        apply_fsdp(
+            model,
+            runtime_context,
+            ParallelismConfig(),
+        )
+        materialize_initialized_model(model, "cpu")
 
         x = torch.randint(0, 32, (2, 8))
         y = model(x)

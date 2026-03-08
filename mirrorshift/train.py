@@ -1,9 +1,6 @@
 """Step-based training entrypoint."""
 
 import logging
-import math
-import time
-from collections import deque
 from typing import Any, Callable, Iterator, Tuple
 
 import torch
@@ -25,7 +22,8 @@ from mirrorshift.infra import (
 )
 from mirrorshift.metrics import MetricsLogger, build_metrics_logger
 from mirrorshift.runtime import (
-    build_meta_initialized_model,
+    build_meta_model,
+    materialize_initialized_model,
     resolve_device,
     set_determinism,
 )
@@ -87,7 +85,6 @@ def train(
         warmup_steps=training_config.lr_warmup_steps,
         total_steps=training_config.max_steps,
     )
-    step_times = deque(maxlen=100)
     batch_iter = iter_batches(train_loader)
     active_train_state = train_state if train_state is not None else TrainState()
 
@@ -99,8 +96,6 @@ def train(
         next(batch_iter)
 
     for global_step in range(active_train_state.step + 1, training_config.max_steps + 1):
-        step_start_time = time.time()
-
         x, y = next(batch_iter)
         x = x.to(device)
         y = y.to(device)
@@ -116,20 +111,9 @@ def train(
         opt.step()
 
         loss_scalar = loss_value.item()
-        perplexity = math.exp(loss_scalar)
-        step_time = time.time() - step_start_time
-        step_times.append(step_time)
-        avg_step_time = sum(step_times) / len(step_times)
-        steps_per_second = 1.0 / avg_step_time
 
         metrics_logger.log(
-            {
-                "train/loss": loss_scalar,
-                "train/perplexity": perplexity,
-                "train/lr": lr,
-                "perf/seconds_per_step": avg_step_time,
-                "perf/steps_per_second": steps_per_second,
-            },
+            {"train/loss": loss_scalar},
             step=global_step,
         )
 
@@ -142,13 +126,10 @@ def train(
 
         if is_primary and (global_step == 1 or global_step % training_config.log_every == 0):
             LOGGER.info(
-                "step=%d/%d loss=%.5f ppl=%.5f lr=%.2e sec_per_step=%.4f",
+                "step=%d/%d loss=%.5f",
                 global_step,
                 training_config.max_steps,
                 loss_scalar,
-                perplexity,
-                lr,
-                avg_step_time,
             )
     return active_train_state.step
 
@@ -211,9 +192,7 @@ def main() -> int:
                 max_steps=config.training.max_steps,
             )
 
-        model = build_meta_initialized_model(
-            train_spec.build_model, config.model, runtime_context.device
-        )
+        model = build_meta_model(train_spec.build_model, config.model)
         model = apply_model_infra(
             model,
             runtime_context=runtime_context,
@@ -221,6 +200,7 @@ def main() -> int:
             activation_checkpoint_config=config.activation_checkpoint,
             compile_config=config.compile,
         )
+        model = materialize_initialized_model(model, runtime_context.device)
 
         opt = optim.AdamW(model.parameters(), lr=config.training.learning_rate)
         train_state = TrainState()

@@ -48,13 +48,18 @@ def set_determinism(device: str, debug_config: DebugConfig) -> None:
             os.environ.pop("CUBLAS_WORKSPACE_CONFIG", None)
 
 
-def build_meta_initialized_model(
+def build_meta_model(
     build_model: Callable[[ModelConfig], torch.nn.Module],
     model_config: ModelConfig,
-    device: str | torch.device,
 ) -> torch.nn.Module:
     with torch.device("meta"):
-        model = build_model(model_config)
+        return build_model(model_config)
+
+
+def materialize_initialized_model(
+    model: torch.nn.Module,
+    device: str | torch.device,
+) -> torch.nn.Module:
     model.to_empty(device=device)
     init_weights = getattr(model, "init_weights", None)
     if not callable(init_weights):
@@ -64,3 +69,12 @@ def build_meta_initialized_model(
     with torch.no_grad():
         init_weights()
     return model
+
+
+def build_meta_initialized_model(
+    build_model: Callable[[ModelConfig], torch.nn.Module],
+    model_config: ModelConfig,
+    device: str | torch.device,
+) -> torch.nn.Module:
+    model = build_meta_model(build_model, model_config)
+    return materialize_initialized_model(model, device)

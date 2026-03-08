@@ -28,7 +28,7 @@ class TinyTokenDataset(Dataset):
 
 class DummyMetricsLogger:
     def log(self, metrics: dict[str, float], step: int) -> None:
-        assert "train/loss" in metrics
+        assert set(metrics) == {"train/loss"}
         assert step > 0
 
     def close(self) -> None:
