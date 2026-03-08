@@ -27,7 +27,7 @@ mirrorshift/
     train_configs/
       small.toml
   datasets/
-    coqa_stories.txt
+    example_train.parquet
 ```
 
 ## Module Map
@@ -43,7 +43,7 @@ mirrorshift/
 - `mirrorshift/experiments/spec.py`: experiment contract (`TrainSpec`) for model/data/loss composition.
 - `mirrorshift/experiments/default.py`: default causal LM experiment wiring.
 - `mirrorshift/config/train_configs/small.toml`: default unified run/model/training config.
-- `mirrorshift/datasets/coqa_stories.txt`: sample training corpus.
+- `mirrorshift/datasets/example_train.parquet`: sample parquet training corpus with a `text` column.
 
 ## Installation
 
@@ -75,7 +75,7 @@ mirrorshift-train --job.config_file mirrorshift/config/train_configs/small.toml 
 ```bash
 python3 -m mirrorshift.train --job.config_file mirrorshift/config/train_configs/small.toml \
                              --training.max_steps 100 \
-                             --run.dataset mirrorshift/datasets/coqa_stories.txt
+                             --run.dataset mirrorshift/datasets/example_train.parquet
 ```
 
 ## Monitoring

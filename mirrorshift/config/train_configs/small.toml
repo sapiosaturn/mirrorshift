@@ -2,7 +2,7 @@
 print_config = true
 
 [run]
-dataset = "mirrorshift/datasets/coqa_stories.txt"
+dataset = "mirrorshift/datasets/example_train.parquet"
 spec = "causal_lm"
 log_dir = "runs"
 wandb_project = "mirrorshift"
@@ -40,3 +40,10 @@ enable = false
 folder = "checkpoints"
 interval = 100
 keep_latest_k = 0
+
+[data]
+text_column = "text"
+tokenizer_name = "p50k_base"
+max_tokens_per_shard = 200000
+shuffle = true
+shuffle_seed = 0

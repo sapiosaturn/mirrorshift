@@ -1,4 +1,3 @@
-from .datasets import TiktokenTextDataset, TiktokenTxtDataset
 from .planning import (
     SequencePlan,
     SequencePlanBuilder,
@@ -44,8 +43,6 @@ __all__ = [
     "TokenSnapshot",
     "TiktokenEncoding",
     "TiktokenTokenizer",
-    "TiktokenTextDataset",
-    "TiktokenTxtDataset",
     "TokenizerManifest",
     "build_sequence_plan",
     "build_snapshot_from_parquet",

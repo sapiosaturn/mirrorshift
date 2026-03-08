@@ -62,7 +62,6 @@ def test_main_trains_from_parquet_via_mirrordata(tmp_path, monkeypatch) -> None:
             log_every = 1
 
             [data]
-            input_format = "parquet"
             max_documents = 4
             max_tokens_per_shard = 256
             shuffle = true

@@ -123,6 +123,11 @@ def test_validate_run_config_empty_log_dir() -> None:
         validate_run_config(Run(log_dir=""))
 
 
+def test_validate_run_config_rejects_non_parquet_dataset() -> None:
+    with pytest.raises(ValueError, match="parquet file"):
+        validate_run_config(Run(dataset="mirrorshift/datasets/example_train.txt"))
+
+
 def test_validate_run_config_empty_run_id_when_set() -> None:
     with pytest.raises(ValueError, match="run.id must be non-empty when provided"):
         validate_run_config(Run(id=""))
@@ -154,7 +159,7 @@ def test_config_manager_parses_data_toml_and_cli(tmp_path: Path) -> None:
         dedent(
             """
             [data]
-            input_format = "parquet"
+            text_column = "body"
             max_tokens_per_shard = 4096
             """
         )
@@ -166,7 +171,7 @@ def test_config_manager_parses_data_toml_and_cli(tmp_path: Path) -> None:
         ]
     )
 
-    assert config.data.input_format == "parquet"
+    assert config.data.text_column == "body"
     assert config.data.max_tokens_per_shard == 4096
     assert config.data.max_documents == 16
 

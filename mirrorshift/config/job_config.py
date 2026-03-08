@@ -2,6 +2,7 @@
 
 import json
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any, Literal
 
 ScheduleName = Literal[
@@ -11,7 +12,6 @@ ScheduleName = Literal[
     "wsd_cosine",
 ]
 DeviceName = Literal["cpu", "cuda"]
-DataInputFormat = Literal["auto", "text", "parquet"]
 
 DEFAULT_TRAIN_CONFIG = "mirrorshift/config/train_configs/small.toml"
 
@@ -24,7 +24,7 @@ class Job:
 
 @dataclass(frozen=True)
 class Run:
-    dataset: str = "mirrorshift/datasets/coqa_stories.txt"
+    dataset: str = "mirrorshift/datasets/example_train.parquet"
     spec: str = "causal_lm"
     log_dir: str = "runs"
     id: str | None = None
@@ -66,7 +66,6 @@ class TrainingConfig:
 
 @dataclass(frozen=True)
 class DataConfig:
-    input_format: DataInputFormat = "auto"
     text_column: str = "text"
     tokenizer_name: str = "p50k_base"
     max_tokens_per_shard: int = 200_000
@@ -160,6 +159,8 @@ def validate_model_config(config: ModelConfig) -> None:
 def validate_run_config(config: Run) -> None:
     if not config.dataset:
         raise ValueError("run.dataset must be non-empty")
+    if Path(config.dataset).suffix.lower() != ".parquet":
+        raise ValueError("run.dataset must point to a parquet file")
     if not config.spec:
         raise ValueError("run.spec must be non-empty")
     if not config.log_dir:
@@ -190,8 +191,6 @@ def validate_checkpoint_config(config: CheckpointConfig) -> None:
 
 
 def validate_data_config(config: DataConfig) -> None:
-    if config.input_format not in {"auto", "text", "parquet"}:
-        raise ValueError("data.input_format must be 'auto', 'text', or 'parquet'")
     if not config.text_column:
         raise ValueError("data.text_column must be non-empty")
     if not config.tokenizer_name:

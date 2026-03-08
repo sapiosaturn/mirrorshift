@@ -8,7 +8,6 @@ from mirrordata import (
     DeterministicBatchLoader,
     ParquetSnapshotConfig,
     SequencePlanSpec,
-    TiktokenTextDataset,
     build_sequence_plan,
     build_snapshot_from_parquet,
 )
@@ -20,35 +19,6 @@ from .spec import TrainDataBundle, TrainSpec
 
 def build_default_model(model_config: ModelConfig) -> torch.nn.Module:
     return CausalTransformer(model_config=model_config)
-
-
-def resolve_input_format(config: JobConfig) -> str:
-    if config.data.input_format != "auto":
-        return config.data.input_format
-    if Path(config.run.dataset).suffix.lower() == ".parquet":
-        return "parquet"
-    return "text"
-
-
-def build_text_data(config: JobConfig, device: str) -> TrainDataBundle:
-    train_dataset = TiktokenTextDataset(
-        config.run.dataset,
-        sequence_length=config.model.context_length,
-        tokenizer_name=config.data.tokenizer_name,
-    )
-    train_loader = DeterministicBatchLoader(
-        train_dataset,
-        global_batch_size=config.training.batch_size,
-        device=device,
-        drop_last=True,
-        wrap=True,
-    )
-    return TrainDataBundle(
-        train_loader=train_loader,
-        dataset_size=len(train_dataset),
-        vocab_size=train_dataset.get_vocab_size(),
-        exact_resume=True,
-    )
 
 
 def build_parquet_data(config: JobConfig, run_dir: Path, device: str) -> TrainDataBundle:
@@ -102,10 +72,7 @@ def build_parquet_data(config: JobConfig, run_dir: Path, device: str) -> TrainDa
 
 
 def build_default_data(config: JobConfig, run_dir: Path, device: str) -> TrainDataBundle:
-    input_format = resolve_input_format(config)
-    if input_format == "parquet":
-        return build_parquet_data(config, run_dir, device)
-    return build_text_data(config, device)
+    return build_parquet_data(config, run_dir, device)
 
 
 def causal_lm_loss(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:

@@ -1,7 +1,6 @@
 from mirrorshift.config.job_config import (
     CheckpointConfig,
     DataConfig,
-    DataInputFormat,
     DEFAULT_TRAIN_CONFIG,
     DeviceName,
     Job,
@@ -22,7 +21,6 @@ __all__ = [
     "ConfigManager",
     "CheckpointConfig",
     "DataConfig",
-    "DataInputFormat",
     "DEFAULT_TRAIN_CONFIG",
     "DeviceName",
     "Job",

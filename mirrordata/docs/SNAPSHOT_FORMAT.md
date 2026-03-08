@@ -12,15 +12,8 @@ This document defines the initial implemented `mirrordata` snapshot format.
 
 ## Runtime Principle
 
-Training should prefer pretokenized snapshots, not raw text files.
-
-Raw text ingestion remains useful for:
-
-- tiny local experiments
-- smoke tests
-- preprocessing inputs
-
-It is not the long-term hot path.
+Training should prefer pretokenized snapshots built from parquet files, not
+runtime text-file tokenization.
 
 ## Implemented Layout
 

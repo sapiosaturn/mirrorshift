@@ -11,7 +11,7 @@ Current goals:
 
 The package intentionally separates:
 
-- runtime datasets and tokenizers
+- runtime readers/loaders and tokenizers
 - snapshot metadata contracts
 - preprocessing interfaces
 
