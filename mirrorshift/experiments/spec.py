@@ -5,9 +5,10 @@ from typing import Any, Callable
 import torch
 
 from mirrorshift.config import JobConfig, ModelConfig
+from mirrorshift.infra import RuntimeContext
 
 ModelBuilder = Callable[[ModelConfig], torch.nn.Module]
-DataBuilder = Callable[[JobConfig, Path, str], "TrainDataBundle"]
+DataBuilder = Callable[[JobConfig, Path, RuntimeContext], "TrainDataBundle"]
 LossFunction = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
 
 

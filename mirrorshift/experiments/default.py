@@ -8,6 +8,7 @@ from mirrordata import (
 )
 from mirrorshift.modeling.causal_transformers import CausalTransformer
 from mirrorshift.config import JobConfig, ModelConfig
+from mirrorshift.infra import RuntimeContext
 
 from .spec import TrainDataBundle, TrainSpec
 
@@ -16,7 +17,9 @@ def build_default_model(model_config: ModelConfig) -> torch.nn.Module:
     return CausalTransformer(model_config=model_config)
 
 
-def build_default_data(config: JobConfig, run_dir, device: str) -> TrainDataBundle:
+def build_default_data(
+    config: JobConfig, run_dir, runtime_context: RuntimeContext
+) -> TrainDataBundle:
     _ = run_dir
     snapshot_path = Path(config.data.snapshot_path)
     plan_path = Path(config.data.plan_path)
@@ -36,7 +39,9 @@ def build_default_data(config: JobConfig, run_dir, device: str) -> TrainDataBund
     train_loader = DeterministicBatchLoader(
         train_dataset,
         global_batch_size=config.training.batch_size,
-        device=device,
+        world_size=runtime_context.batch_world_size,
+        rank=runtime_context.batch_rank,
+        device=runtime_context.device,
         drop_last=True,
         wrap=True,
     )

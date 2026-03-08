@@ -47,7 +47,6 @@ def tiny_training_config() -> TrainingConfig:
         lr_warmup_steps=1,
         lr_schedule="linear_warmup",
         max_steps=3,
-        compile=False,
         log_every=1,
     )
 

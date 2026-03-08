@@ -87,8 +87,10 @@ def test_main_trains_from_prebuilt_mirrordata_artifacts(tmp_path, monkeypatch) -
             lr_warmup_steps = 1
             lr_schedule = "linear_warmup"
             max_steps = 2
-            compile = false
             log_every = 1
+
+            [compile]
+            enable = false
 
             [data]
             snapshot_path = "{snapshot_dir}"

@@ -11,6 +11,9 @@ ScheduleName = Literal[
     "wsd_cosine",
 ]
 DeviceName = Literal["cpu", "cuda"]
+DTypeName = Literal["float32", "bfloat16", "float16"]
+ReshardPolicyName = Literal["default", "always", "never"]
+ActivationCheckpointMode = Literal["none", "full", "selective"]
 
 DEFAULT_TRAIN_CONFIG = "mirrorshift/config/train_configs/small.toml"
 
@@ -57,7 +60,6 @@ class TrainingConfig:
     lr_warmup_steps: int = 50
     lr_schedule: ScheduleName = "wsd_exponential"
     max_steps: int = 500
-    compile: bool = False
     log_every: int = 25
 
 
@@ -65,6 +67,33 @@ class TrainingConfig:
 class DebugConfig:
     seed: int | None = None
     deterministic: bool = False
+
+
+@dataclass(frozen=True)
+class ParallelismConfig:
+    dp_replicate: int = 1
+    dp_shard: int = 1
+    mixed_precision_param: DTypeName = "float32"
+    mixed_precision_reduce: DTypeName = "float32"
+    reshard_after_forward: ReshardPolicyName = "default"
+    bucket_cap_mb: int = 100
+
+
+@dataclass(frozen=True)
+class ActivationCheckpointConfig:
+    mode: ActivationCheckpointMode = "none"
+    selective_ac_option: str = "2"
+    preserve_rng_state: bool = True
+    determinism_check: str = "default"
+    debug: bool = False
+    early_stop: bool = False
+
+
+@dataclass(frozen=True)
+class CompileConfig:
+    enable: bool = False
+    backend: str = "inductor"
+    fullgraph: bool = True
 
 
 @dataclass(frozen=True)
@@ -89,6 +118,11 @@ class JobConfig:
     model: ModelConfig = field(default_factory=ModelConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     debug: DebugConfig = field(default_factory=DebugConfig)
+    parallelism: ParallelismConfig = field(default_factory=ParallelismConfig)
+    activation_checkpoint: ActivationCheckpointConfig = field(
+        default_factory=ActivationCheckpointConfig
+    )
+    compile: CompileConfig = field(default_factory=CompileConfig)
     data: DataConfig = field(default_factory=DataConfig)
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
 
@@ -120,6 +154,40 @@ def validate_training_config(config: TrainingConfig) -> None:
 def validate_debug_config(config: DebugConfig) -> None:
     if config.seed is not None and config.seed < 0:
         raise ValueError("debug.seed must be >= 0 when provided")
+
+
+def validate_parallelism_config(config: ParallelismConfig) -> None:
+    if config.dp_replicate <= 0:
+        raise ValueError("parallelism.dp_replicate must be > 0")
+    if config.dp_shard <= 0:
+        raise ValueError("parallelism.dp_shard must be > 0")
+    if config.bucket_cap_mb <= 0:
+        raise ValueError("parallelism.bucket_cap_mb must be > 0")
+    if config.mixed_precision_param not in {"float32", "bfloat16", "float16"}:
+        raise ValueError("parallelism.mixed_precision_param has unsupported dtype")
+    if config.mixed_precision_reduce not in {"float32", "bfloat16", "float16"}:
+        raise ValueError("parallelism.mixed_precision_reduce has unsupported dtype")
+    if config.reshard_after_forward not in {"default", "always", "never"}:
+        raise ValueError(
+            "parallelism.reshard_after_forward must be 'default', 'always', or 'never'"
+        )
+
+
+def validate_activation_checkpoint_config(config: ActivationCheckpointConfig) -> None:
+    if config.mode not in {"none", "full", "selective"}:
+        raise ValueError("activation_checkpoint.mode must be 'none', 'full', or 'selective'")
+    if config.mode == "selective":
+        if config.selective_ac_option != "op" and not config.selective_ac_option.isdigit():
+            raise ValueError(
+                "activation_checkpoint.selective_ac_option must be 'op' or a positive integer"
+            )
+        if config.selective_ac_option.isdigit() and int(config.selective_ac_option) <= 0:
+            raise ValueError("activation_checkpoint.selective_ac_option must be > 0")
+
+
+def validate_compile_config(config: CompileConfig) -> None:
+    if not config.backend:
+        raise ValueError("compile.backend must be non-empty")
 
 
 def validate_model_config(config: ModelConfig) -> None:

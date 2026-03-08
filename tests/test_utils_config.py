@@ -6,17 +6,23 @@ from textwrap import dedent
 import pytest
 
 from mirrorshift.config import (
+    ActivationCheckpointConfig,
     CheckpointConfig,
+    CompileConfig,
     ConfigManager,
     DataConfig,
     DebugConfig,
     ModelConfig,
+    ParallelismConfig,
     Run,
     TrainingConfig,
+    validate_activation_checkpoint_config,
     validate_checkpoint_config,
+    validate_compile_config,
     validate_data_config,
     validate_debug_config,
     validate_model_config,
+    validate_parallelism_config,
     validate_run_config,
     validate_training_config,
 )
@@ -116,7 +122,6 @@ def test_validate_training_config_invalid_device() -> None:
         lr_warmup_steps=0,
         lr_schedule="linear_warmup",
         max_steps=10,
-        compile=False,
         log_every=2,
     )
     with pytest.raises(ValueError, match="must be 'cpu' or 'cuda'"):
@@ -126,6 +131,23 @@ def test_validate_training_config_invalid_device() -> None:
 def test_validate_debug_config_negative_seed() -> None:
     with pytest.raises(ValueError, match="debug.seed must be >= 0"):
         validate_debug_config(DebugConfig(seed=-1))
+
+
+def test_validate_parallelism_config_invalid_degree() -> None:
+    with pytest.raises(ValueError, match="parallelism.dp_replicate must be > 0"):
+        validate_parallelism_config(ParallelismConfig(dp_replicate=0))
+
+
+def test_validate_activation_checkpoint_config_invalid_selective_option() -> None:
+    with pytest.raises(ValueError, match="selective_ac_option"):
+        validate_activation_checkpoint_config(
+            ActivationCheckpointConfig(mode="selective", selective_ac_option="0")
+        )
+
+
+def test_validate_compile_config_empty_backend() -> None:
+    with pytest.raises(ValueError, match="compile.backend must be non-empty"):
+        validate_compile_config(CompileConfig(backend=""))
 
 
 def test_validate_run_config_empty_log_dir() -> None:
@@ -223,6 +245,39 @@ def test_config_manager_parses_debug_toml_and_cli(tmp_path: Path) -> None:
 
     assert config.debug.seed == 7
     assert config.debug.deterministic is True
+
+
+def test_config_manager_parses_parallelism_compile_and_ac(tmp_path: Path) -> None:
+    config_path = tmp_path / "infra.toml"
+    config_path.write_text(
+        dedent(
+            """
+            [parallelism]
+            dp_replicate = 1
+            dp_shard = 1
+
+            [activation_checkpoint]
+            mode = "selective"
+            selective_ac_option = "2"
+
+            [compile]
+            backend = "eager"
+            """
+        )
+    )
+    config = ConfigManager().parse_args(
+        [
+            f"--job.config_file={config_path}",
+            "--compile.enable",
+        ]
+    )
+
+    assert config.parallelism.dp_replicate == 1
+    assert config.parallelism.dp_shard == 1
+    assert config.activation_checkpoint.mode == "selective"
+    assert config.activation_checkpoint.selective_ac_option == "2"
+    assert config.compile.enable is True
+    assert config.compile.backend == "eager"
 
 
 def test_job_config_logs_resolved_config_unconditionally(caplog: pytest.LogCaptureFixture) -> None:

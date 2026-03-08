@@ -31,8 +31,13 @@ def write_json_immutable(path: Path, payload: dict[str, Any]) -> None:
         json.dump(payload, handle, indent=2, sort_keys=True)
 
 
-def create_run_artifacts(config: JobConfig) -> RunArtifacts:
-    run_id = resolve_run_id(config.run.id)
+def create_run_artifacts(
+    config: JobConfig,
+    *,
+    resolved_run_id: str | None = None,
+    write_files: bool = True,
+) -> RunArtifacts:
+    run_id = resolved_run_id or resolve_run_id(config.run.id)
     run_dir = Path(config.run.log_dir) / run_id
 
     config_snapshot_path = run_dir / config.run.config_snapshot_file
@@ -51,8 +56,14 @@ def create_run_artifacts(config: JobConfig) -> RunArtifacts:
         if not manifest_path.is_file():
             raise FileNotFoundError(f"Missing run manifest for resume run: {manifest_path}")
     else:
-        run_dir.mkdir(parents=True, exist_ok=False)
-        write_json_immutable(config_snapshot_path, config.to_dict())
+        if write_files:
+            run_dir.mkdir(parents=True, exist_ok=False)
+            write_json_immutable(config_snapshot_path, config.to_dict())
+        else:
+            if not run_dir.is_dir():
+                raise FileNotFoundError(f"Run directory does not exist: {run_dir}")
+            if not config_snapshot_path.is_file():
+                raise FileNotFoundError(f"Missing config snapshot: {config_snapshot_path}")
 
     return RunArtifacts(
         run_id=run_id,
@@ -82,6 +93,13 @@ def write_run_manifest(
         "data_plan_path": config.data.plan_path,
         "trainable_params": trainable_params,
         "max_steps": config.training.max_steps,
+        "parallelism": {
+            "dp_replicate": config.parallelism.dp_replicate,
+            "dp_shard": config.parallelism.dp_shard,
+            "mixed_precision_param": config.parallelism.mixed_precision_param,
+            "mixed_precision_reduce": config.parallelism.mixed_precision_reduce,
+            "reshard_after_forward": config.parallelism.reshard_after_forward,
+        },
         "wandb_project": config.run.wandb_project,
         "wandb_entity": config.run.wandb_entity,
         "wandb_mode": config.run.wandb_mode,

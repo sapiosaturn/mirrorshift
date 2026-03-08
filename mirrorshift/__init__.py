@@ -12,23 +12,29 @@ from mirrorshift.modeling.causal_transformers import (
     CausalTransformer,
 )
 from mirrorshift.config import (
+    ActivationCheckpointConfig,
     CheckpointConfig,
+    CompileConfig,
     ConfigManager,
     DataConfig,
     DebugConfig,
     JobConfig,
     ModelConfig,
+    ParallelismConfig,
     TrainingConfig,
 )
 
 # Make these modules available for import
 __all__ = [
     "CausalTransformer",
+    "ActivationCheckpointConfig",
     "CheckpointConfig",
+    "CompileConfig",
     "ConfigManager",
     "DataConfig",
     "DebugConfig",
     "JobConfig",
     "ModelConfig",
+    "ParallelismConfig",
     "TrainingConfig",
 ]

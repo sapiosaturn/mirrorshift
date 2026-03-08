@@ -16,6 +16,13 @@ from mirrorshift.config import (
     TrainingConfig,
 )
 from mirrorshift.experiments import get_train_spec
+from mirrorshift.infra import (
+    apply_model_infra,
+    barrier_if_distributed,
+    build_runtime_context,
+    destroy_process_group_if_needed,
+    synchronized_run_id,
+)
 from mirrorshift.metrics import MetricsLogger, build_metrics_logger
 from mirrorshift.runtime import (
     build_meta_initialized_model,
@@ -66,12 +73,13 @@ def train(
     train_loader: Any,
     opt: optim.AdamW,
     loss_fn: LossFunction,
-    device: str,
+    device: str | torch.device,
     training_config: TrainingConfig,
     metrics_logger: MetricsLogger,
     train_state: TrainState | None = None,
     checkpointer: CheckpointManager | None = None,
     resume_batch_offset: int = 0,
+    is_primary: bool = True,
 ) -> int:
     lr_schedule = get_lr_schedule(
         schedule=training_config.lr_schedule,
@@ -132,7 +140,7 @@ def train(
                 last_step=global_step == training_config.max_steps,
             )
 
-        if global_step == 1 or global_step % training_config.log_every == 0:
+        if is_primary and (global_step == 1 or global_step % training_config.log_every == 0):
             LOGGER.info(
                 "step=%d/%d loss=%.5f ppl=%.5f lr=%.2e sec_per_step=%.4f",
                 global_step,
@@ -152,95 +160,129 @@ def main() -> int:
     )
 
     config: JobConfig = ConfigManager().parse_args()
-    config.maybe_log(LOGGER)
-    artifacts = create_run_artifacts(config)
-    LOGGER.info("run_id=%s run_dir=%s", artifacts.run_id, artifacts.run_dir)
-    device = resolve_device(config.training.device)
-    set_determinism(device, config.debug)
-
-    train_spec = get_train_spec(config.run.spec)
-    train_data = train_spec.build_data(config, artifacts.run_dir, device)
-
-    if train_data.vocab_size != config.model.vocab_size:
-        raise ValueError(
-            "Dataset vocab size does not match model config vocab size: "
-            f"{train_data.vocab_size} vs {config.model.vocab_size}"
-        )
-    if train_data.dataset_size < config.training.batch_size:
-        raise ValueError(
-            "Dataset must have at least batch_size sequences. "
-            f"len(dataset)={train_data.dataset_size} batch_size={config.training.batch_size}"
-        )
-    train_loader = train_data.train_loader
-    if len(train_loader) == 0:
-        raise ValueError("train_loader is empty for the provided configuration")
-    log_data_preflight(
-        dataset_size=train_data.dataset_size,
-        batch_size=config.training.batch_size,
-        max_steps=config.training.max_steps,
-    )
-
-    model = build_meta_initialized_model(train_spec.build_model, config.model, device)
-    if config.training.compile:
-        model = torch.compile(model)
-
-    opt = optim.AdamW(model.parameters(), lr=config.training.learning_rate)
-    train_state = TrainState()
-    checkpointer = CheckpointManager(
-        config=config.checkpoint,
-        run_dir=artifacts.run_dir,
-        model=model,
-        optimizer=opt,
-        train_state=train_state,
-        train_loader=train_loader,
-        data_identity=train_data.data_identity,
-    )
-    if config.checkpoint.load_step is not None:
-        checkpointer.load()
-        LOGGER.info("Resuming training from step=%d", train_state.step)
-
-    metrics_logger = build_metrics_logger(
-        config=config,
-        run_id=artifacts.run_id,
-        run_dir=artifacts.run_dir,
-    )
-
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    if not artifacts.resumed:
-        write_run_manifest(
-            artifacts=artifacts,
-            config=config,
-            dataset_size=train_data.dataset_size,
-            trainable_params=trainable_params,
-            device=device,
-        )
-    else:
-        LOGGER.info(
-            "Reusing existing config snapshot=%s and run manifest=%s",
-            artifacts.config_snapshot_path,
-            artifacts.manifest_path,
-        )
-
-    LOGGER.info(
-        "dataset_size=%d trainable_params=%d device=%s max_steps=%d",
-        train_data.dataset_size,
-        trainable_params,
-        device,
-        config.training.max_steps,
-    )
-    LOGGER.info(
-        "config_snapshot=%s run_manifest=%s",
-        artifacts.config_snapshot_path,
-        artifacts.manifest_path,
-    )
+    base_device_type = resolve_device(config.training.device)
+    runtime_context = build_runtime_context(base_device_type, config.parallelism)
+    metrics_logger: MetricsLogger | None = None
 
     try:
+        if runtime_context.is_primary:
+            config.maybe_log(LOGGER)
+
+        run_id = synchronized_run_id(config.run.id, runtime_context)
+        if runtime_context.is_primary:
+            artifacts = create_run_artifacts(
+                config,
+                resolved_run_id=run_id,
+                write_files=True,
+            )
+        barrier_if_distributed(runtime_context)
+        if not runtime_context.is_primary:
+            artifacts = create_run_artifacts(
+                config,
+                resolved_run_id=run_id,
+                write_files=False,
+            )
+
+        if runtime_context.is_primary:
+            LOGGER.info("run_id=%s run_dir=%s", artifacts.run_id, artifacts.run_dir)
+
+        set_determinism(str(runtime_context.device), config.debug)
+
+        train_spec = get_train_spec(config.run.spec)
+        train_data = train_spec.build_data(config, artifacts.run_dir, runtime_context)
+
+        if train_data.vocab_size != config.model.vocab_size:
+            raise ValueError(
+                "Dataset vocab size does not match model config vocab size: "
+                f"{train_data.vocab_size} vs {config.model.vocab_size}"
+            )
+        if train_data.dataset_size < config.training.batch_size:
+            raise ValueError(
+                "Dataset must have at least batch_size sequences. "
+                f"len(dataset)={train_data.dataset_size} batch_size={config.training.batch_size}"
+            )
+        train_loader = train_data.train_loader
+        if len(train_loader) == 0:
+            raise ValueError("train_loader is empty for the provided configuration")
+        if runtime_context.is_primary:
+            log_data_preflight(
+                dataset_size=train_data.dataset_size,
+                batch_size=config.training.batch_size,
+                max_steps=config.training.max_steps,
+            )
+
+        model = build_meta_initialized_model(
+            train_spec.build_model, config.model, runtime_context.device
+        )
+        model = apply_model_infra(
+            model,
+            runtime_context=runtime_context,
+            parallelism_config=config.parallelism,
+            activation_checkpoint_config=config.activation_checkpoint,
+            compile_config=config.compile,
+        )
+
+        opt = optim.AdamW(model.parameters(), lr=config.training.learning_rate)
+        train_state = TrainState()
+        checkpointer = CheckpointManager(
+            config=config.checkpoint,
+            run_dir=artifacts.run_dir,
+            model=model,
+            optimizer=opt,
+            train_state=train_state,
+            train_loader=train_loader,
+            data_identity=train_data.data_identity,
+            is_primary=runtime_context.is_primary,
+            is_distributed=runtime_context.is_distributed,
+        )
+        if config.checkpoint.load_step is not None:
+            checkpointer.load()
+            if runtime_context.is_primary:
+                LOGGER.info("Resuming training from step=%d", train_state.step)
+
+        metrics_logger = build_metrics_logger(
+            config=config,
+            run_id=artifacts.run_id,
+            run_dir=artifacts.run_dir,
+            is_primary=runtime_context.is_primary,
+        )
+
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        if not artifacts.resumed and runtime_context.is_primary:
+            write_run_manifest(
+                artifacts=artifacts,
+                config=config,
+                dataset_size=train_data.dataset_size,
+                trainable_params=trainable_params,
+                device=str(runtime_context.device),
+            )
+        elif artifacts.resumed and runtime_context.is_primary:
+            LOGGER.info(
+                "Reusing existing config snapshot=%s and run manifest=%s",
+                artifacts.config_snapshot_path,
+                artifacts.manifest_path,
+            )
+
+        if runtime_context.is_primary:
+            LOGGER.info(
+                "dataset_size=%d trainable_params=%d device=%s max_steps=%d",
+                train_data.dataset_size,
+                trainable_params,
+                runtime_context.device,
+                config.training.max_steps,
+            )
+            LOGGER.info(
+                "config_snapshot=%s run_manifest=%s",
+                artifacts.config_snapshot_path,
+                artifacts.manifest_path,
+            )
+
         final_step = train(
             model=model,
             train_loader=train_loader,
             opt=opt,
             loss_fn=train_spec.loss_fn,
-            device=device,
+            device=runtime_context.device,
             training_config=config.training,
             metrics_logger=metrics_logger,
             train_state=train_state,
@@ -250,11 +292,15 @@ def main() -> int:
                 if checkpointer.restored_loader_state
                 else train_state.step if train_data.exact_resume else 0
             ),
+            is_primary=runtime_context.is_primary,
         )
     finally:
-        metrics_logger.close()
+        if metrics_logger is not None:
+            metrics_logger.close()
+        destroy_process_group_if_needed(runtime_context)
 
-    LOGGER.info("Training complete at step=%d", final_step)
+    if runtime_context.is_primary:
+        LOGGER.info("Training complete at step=%d", final_step)
     return 0
 
 

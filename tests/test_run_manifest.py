@@ -86,6 +86,8 @@ def test_write_run_manifest_is_immutable(tmp_path) -> None:
     assert manifest["data_plan_path"] == config.data.plan_path
     assert manifest["wandb_project"] == "mirrorshift"
     assert manifest["wandb_mode"] == "online"
+    assert manifest["parallelism"]["dp_replicate"] == 1
+    assert manifest["parallelism"]["dp_shard"] == 1
 
     with pytest.raises(FileExistsError):
         write_run_manifest(

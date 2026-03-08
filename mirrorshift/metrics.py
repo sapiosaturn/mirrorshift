@@ -43,8 +43,12 @@ class WandBLogger:
         self._run.finish()
 
 
-def build_metrics_logger(config: JobConfig, run_id: str, run_dir: Path) -> MetricsLogger:
+def build_metrics_logger(
+    config: JobConfig, run_id: str, run_dir: Path, *, is_primary: bool = True
+) -> MetricsLogger:
     # Never emit W&B data during pytest runs, even if run.wandb_mode=online.
+    if not is_primary:
+        return NoOpLogger()
     if "PYTEST_CURRENT_TEST" in os.environ:
         return NoOpLogger()
     if config.run.wandb_mode == "disabled":

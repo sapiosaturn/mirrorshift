@@ -5,6 +5,7 @@ import random
 from collections.abc import Callable
 
 import torch
+import torch.distributed as dist
 
 from mirrorshift.config import DebugConfig, ModelConfig
 
@@ -22,17 +23,23 @@ def resolve_device(device_name: str) -> str:
 
 def set_determinism(device: str, debug_config: DebugConfig) -> None:
     seed = debug_config.seed
+    if dist.is_initialized():
+        seed_payload = [seed]
+        if seed_payload[0] is None and dist.get_rank() == 0:
+            seed_payload[0] = torch.seed()
+        dist.broadcast_object_list(seed_payload, src=0)
+        seed = int(seed_payload[0])
     if seed is not None:
         random.seed(seed)
         torch.manual_seed(seed)
-        if device == "cuda":
+        if str(device).startswith("cuda"):
             torch.cuda.manual_seed_all(seed)
         os.environ["PYTHONHASHSEED"] = str(seed % 2**32)
     else:
         os.environ.pop("PYTHONHASHSEED", None)
 
     torch.use_deterministic_algorithms(debug_config.deterministic)
-    if device == "cuda":
+    if str(device).startswith("cuda"):
         torch.backends.cudnn.deterministic = debug_config.deterministic
         torch.backends.cudnn.benchmark = not debug_config.deterministic
         if debug_config.deterministic:
@@ -44,7 +51,7 @@ def set_determinism(device: str, debug_config: DebugConfig) -> None:
 def build_meta_initialized_model(
     build_model: Callable[[ModelConfig], torch.nn.Module],
     model_config: ModelConfig,
-    device: str,
+    device: str | torch.device,
 ) -> torch.nn.Module:
     with torch.device("meta"):
         model = build_model(model_config)

@@ -1,4 +1,4 @@
-"""Minimal DCP checkpoint helpers for single-process training."""
+"""Minimal DCP checkpoint helpers."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
 from torch.distributed.checkpoint.state_dict import (
     get_optimizer_state_dict,
@@ -47,6 +48,8 @@ class CheckpointManager:
         train_state: TrainState,
         train_loader: Any | None = None,
         data_identity: dict[str, int | str] | None = None,
+        is_primary: bool = True,
+        is_distributed: bool = False,
     ) -> None:
         self.config = config
         self.run_dir = run_dir
@@ -57,6 +60,8 @@ class CheckpointManager:
         self.data_identity = dict(data_identity or {})
         self.checkpoint_dir = run_dir / config.folder
         self.restored_loader_state = False
+        self.is_primary = is_primary
+        self.is_distributed = is_distributed
 
     def load(self) -> bool:
         if self.config.load_step is None:
@@ -107,11 +112,14 @@ class CheckpointManager:
         LOGGER.info("Saving checkpoint to %s", checkpoint_id)
         payload = self._save_payload()
         dcp.save(payload, checkpoint_id=str(checkpoint_id))
-        self._write_metadata(
-            checkpoint_id,
-            has_loader_state="loader" in payload,
-        )
-        self._purge_stale_checkpoints()
+        if self.is_primary:
+            self._write_metadata(
+                checkpoint_id,
+                has_loader_state="loader" in payload,
+            )
+            self._purge_stale_checkpoints()
+        if self.is_distributed and dist.is_initialized():
+            dist.barrier()
 
     def _save_payload(self) -> dict[str, Any]:
         payload = {

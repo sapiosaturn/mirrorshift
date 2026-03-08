@@ -28,8 +28,28 @@ learning_rate = 5e-4
 lr_warmup_steps = 50
 lr_schedule = "wsd_exponential"
 max_steps = 500
-compile = false
 log_every = 25
+
+[parallelism]
+dp_replicate = 1
+dp_shard = 1
+mixed_precision_param = "float32"
+mixed_precision_reduce = "float32"
+reshard_after_forward = "default"
+bucket_cap_mb = 100
+
+[activation_checkpoint]
+mode = "none"
+selective_ac_option = "2"
+preserve_rng_state = true
+determinism_check = "default"
+debug = false
+early_stop = false
+
+[compile]
+enable = false
+backend = "inductor"
+fullgraph = true
 
 [checkpoint]
 enable = false

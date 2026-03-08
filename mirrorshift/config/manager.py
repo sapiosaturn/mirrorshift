@@ -10,10 +10,13 @@ import tyro
 
 from mirrorshift.config.job_config import (
     JobConfig,
+    validate_activation_checkpoint_config,
     validate_checkpoint_config,
+    validate_compile_config,
     validate_data_config,
     validate_debug_config,
     validate_model_config,
+    validate_parallelism_config,
     validate_run_config,
     validate_training_config,
 )
@@ -103,5 +106,8 @@ class ConfigManager:
         validate_model_config(config.model)
         validate_training_config(config.training)
         validate_debug_config(config.debug)
+        validate_parallelism_config(config.parallelism)
+        validate_activation_checkpoint_config(config.activation_checkpoint)
+        validate_compile_config(config.compile)
         validate_data_config(config.data)
         validate_checkpoint_config(config.checkpoint)
