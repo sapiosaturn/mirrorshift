@@ -75,7 +75,19 @@ def test_train_cpu_smoke_single_digit_steps(tmp_path) -> None:
             self.logged_steps: list[int] = []
 
         def log(self, metrics: dict[str, float], step: int) -> None:
-            assert set(metrics) == {"train/loss"}
+            assert set(metrics) == {
+                "memory/max_active_gib",
+                "memory/max_reserved_gib",
+                "optimizer/lr",
+                "throughput/tflops",
+                "throughput/tokens_per_second_per_gpu",
+                "timing/data_loading_seconds",
+                "timing/end_to_end_seconds",
+                "train/grad_norm",
+                "train/loss",
+                "train/max_loss",
+                "train/n_tokens_seen",
+            }
             self.logged_steps.append(step)
 
         def close(self) -> None:
@@ -120,7 +132,19 @@ def test_train_cpu_smoke_with_mirrordata_batch_loader() -> None:
             self.logged_steps: list[int] = []
 
         def log(self, metrics: dict[str, float], step: int) -> None:
-            assert set(metrics) == {"train/loss"}
+            assert set(metrics) == {
+                "memory/max_active_gib",
+                "memory/max_reserved_gib",
+                "optimizer/lr",
+                "throughput/tflops",
+                "throughput/tokens_per_second_per_gpu",
+                "timing/data_loading_seconds",
+                "timing/end_to_end_seconds",
+                "train/grad_norm",
+                "train/loss",
+                "train/max_loss",
+                "train/n_tokens_seen",
+            }
             self.logged_steps.append(step)
 
         def close(self) -> None:

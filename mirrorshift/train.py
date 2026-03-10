@@ -1,15 +1,18 @@
 """Step-based training entrypoint."""
 
 import logging
+import time
 from typing import Any, Callable, Iterator, Tuple
 
 import torch
+import torch.distributed as dist
 import torch.optim as optim
 
 from mirrorshift.checkpointing import CheckpointManager, TrainState
 from mirrorshift.config import (
     ConfigManager,
     JobConfig,
+    ModelConfig,
     TrainingConfig,
 )
 from mirrorshift.experiments import get_train_spec
@@ -34,6 +37,7 @@ BatchType = Tuple[torch.Tensor, torch.Tensor]
 LossFunction = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
 
 LOGGER = logging.getLogger("mirrorshift.train")
+_GIB_IN_BYTES = 1024**3
 
 def iter_batches(train_loader: Any) -> Iterator[BatchType]:
     if hasattr(train_loader, "next"):
@@ -66,6 +70,93 @@ def log_data_preflight(*, dataset_size: int, batch_size: int, max_steps: int) ->
         )
 
 
+def estimate_num_flops_per_token(
+    model: torch.nn.Module,
+    *,
+    seq_len: int,
+) -> int:
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    embedding_params = sum(
+        p.numel()
+        for name, p in model.named_parameters()
+        if p.requires_grad and "embedding" in name
+    )
+    model_config = getattr(model, "model_config", None)
+    if isinstance(model_config, ModelConfig):
+        if model_config.attention_type == "gqa":
+            head_dims = 2 * (model_config.embedding_dim // model_config.num_heads)
+        else:
+            head_dims = (
+                int(model_config.qk_nope_head_dim or 0)
+                + int(model_config.qk_rope_head_dim or 0)
+                + int(model_config.v_head_dim or 0)
+            )
+        attention_term = (
+            6
+            * model_config.num_layers
+            * model_config.num_heads
+            * head_dims
+            * seq_len
+        )
+        return 6 * max(0, trainable_params - embedding_params) + attention_term
+    return 6 * trainable_params
+
+
+def compute_global_loss_metrics(
+    loss_value: torch.Tensor,
+    targets: torch.Tensor,
+) -> tuple[float, float, int]:
+    device = loss_value.device
+    local_token_count = torch.tensor(float(targets.numel()), device=device)
+    local_loss_sum = loss_value.detach().float() * local_token_count
+    local_avg_loss = local_loss_sum / local_token_count
+
+    if dist.is_available() and dist.is_initialized():
+        global_loss_sum = local_loss_sum.clone()
+        global_token_count = local_token_count.clone()
+        global_max_loss = local_avg_loss.clone()
+        dist.all_reduce(global_loss_sum, op=dist.ReduceOp.SUM)
+        dist.all_reduce(global_token_count, op=dist.ReduceOp.SUM)
+        dist.all_reduce(global_max_loss, op=dist.ReduceOp.MAX)
+        global_avg_loss = global_loss_sum / global_token_count
+        return (
+            float(global_avg_loss.item()),
+            float(global_max_loss.item()),
+            int(global_token_count.item()),
+        )
+
+    return (
+        float(local_avg_loss.item()),
+        float(local_avg_loss.item()),
+        int(local_token_count.item()),
+    )
+
+
+def compute_grad_norm(model: torch.nn.Module, device: torch.device) -> float:
+    norm_sq = torch.zeros((), device=device, dtype=torch.float64)
+    for parameter in model.parameters():
+        if parameter.grad is None:
+            continue
+        grad = parameter.grad.detach()
+        norm_sq += torch.sum(grad.float() * grad.float(), dtype=torch.float64)
+
+    if dist.is_available() and dist.is_initialized():
+        dist.all_reduce(norm_sq, op=dist.ReduceOp.SUM)
+    return float(torch.sqrt(norm_sq).item())
+
+
+def get_peak_memory_gib(device: torch.device) -> tuple[float, float]:
+    if device.type != "cuda":
+        return 0.0, 0.0
+
+    device_index = (
+        device.index if device.index is not None else torch.cuda.current_device()
+    )
+    max_active = torch.cuda.max_memory_allocated(device_index) / _GIB_IN_BYTES
+    max_reserved = torch.cuda.max_memory_reserved(device_index) / _GIB_IN_BYTES
+    return float(max_active), float(max_reserved)
+
+
 def train(
     model: torch.nn.Module,
     train_loader: Any,
@@ -78,6 +169,8 @@ def train(
     checkpointer: CheckpointManager | None = None,
     resume_batch_offset: int = 0,
     is_primary: bool = True,
+    data_parallel_world_size: int = 1,
+    n_tokens_seen_start: int = 0,
 ) -> int:
     lr_schedule = get_lr_schedule(
         schedule=training_config.lr_schedule,
@@ -87,18 +180,31 @@ def train(
     )
     batch_iter = iter_batches(train_loader)
     active_train_state = train_state if train_state is not None else TrainState()
+    device = torch.device(device)
+    num_flops_per_token: int | None = None
+    n_tokens_seen = int(n_tokens_seen_start)
 
     model.train()
     if active_train_state.step >= training_config.max_steps:
         return active_train_state.step
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
 
     for _ in range(apply_resume_offset(train_loader, resume_batch_offset)):
         next(batch_iter)
 
     for global_step in range(active_train_state.step + 1, training_config.max_steps + 1):
+        step_start_time = time.perf_counter()
+        data_loading_start_time = step_start_time
         x, y = next(batch_iter)
         x = x.to(device)
         y = y.to(device)
+        data_loading_time = time.perf_counter() - data_loading_start_time
+        if num_flops_per_token is None:
+            num_flops_per_token = estimate_num_flops_per_token(
+                model,
+                seq_len=y.size(1),
+            )
 
         opt.zero_grad(set_to_none=True)
         lr = lr_schedule(global_step - 1)
@@ -108,12 +214,42 @@ def train(
         logits = model(x)
         loss_value = loss_fn(logits, y)
         loss_value.backward()
+        grad_norm = compute_grad_norm(model, device)
         opt.step()
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        end_to_end_time = time.perf_counter() - step_start_time
 
-        loss_scalar = loss_value.item()
+        global_avg_loss, global_max_loss, global_tokens_this_step = (
+            compute_global_loss_metrics(loss_value, y)
+        )
+        n_tokens_seen += global_tokens_this_step
+        tokens_per_second_per_gpu = (
+            global_tokens_this_step / max(1, data_parallel_world_size)
+        ) / max(end_to_end_time, 1e-9)
+        tflops = (
+            float(num_flops_per_token) * tokens_per_second_per_gpu / 1e12
+            if num_flops_per_token is not None
+            else 0.0
+        )
+        max_active_gib, max_reserved_gib = get_peak_memory_gib(device)
+        if device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(device)
 
         metrics_logger.log(
-            {"train/loss": loss_scalar},
+            {
+                "train/loss": global_avg_loss,
+                "train/max_loss": global_max_loss,
+                "train/grad_norm": grad_norm,
+                "train/n_tokens_seen": float(n_tokens_seen),
+                "optimizer/lr": lr,
+                "throughput/tokens_per_second_per_gpu": tokens_per_second_per_gpu,
+                "throughput/tflops": tflops,
+                "timing/end_to_end_seconds": end_to_end_time,
+                "timing/data_loading_seconds": data_loading_time,
+                "memory/max_active_gib": max_active_gib,
+                "memory/max_reserved_gib": max_reserved_gib,
+            },
             step=global_step,
         )
 
@@ -126,10 +262,23 @@ def train(
 
         if is_primary and (global_step == 1 or global_step % training_config.log_every == 0):
             LOGGER.info(
-                "step=%d/%d loss=%.5f",
+                "step=%d/%d loss=%.5f max_loss=%.5f grad_norm=%.4f "
+                "tps/gpu=%.2f tflops=%.4f end_to_end=%.4fs data_loading=%.4fs "
+                "memory_active=%.2fGiB memory_reserved=%.2fGiB lr=%.2e "
+                "n_tokens_seen=%d",
                 global_step,
                 training_config.max_steps,
-                loss_scalar,
+                global_avg_loss,
+                global_max_loss,
+                grad_norm,
+                tokens_per_second_per_gpu,
+                tflops,
+                end_to_end_time,
+                data_loading_time,
+                max_active_gib,
+                max_reserved_gib,
+                lr,
+                n_tokens_seen,
             )
     return active_train_state.step
 
@@ -273,6 +422,12 @@ def main() -> int:
                 else train_state.step if train_data.exact_resume else 0
             ),
             is_primary=runtime_context.is_primary,
+            data_parallel_world_size=runtime_context.batch_world_size,
+            n_tokens_seen_start=(
+                train_state.step
+                * config.training.batch_size
+                * config.model.context_length
+            ),
         )
     finally:
         if metrics_logger is not None:

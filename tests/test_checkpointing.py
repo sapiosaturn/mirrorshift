@@ -28,7 +28,19 @@ class TinyTokenDataset(Dataset):
 
 class DummyMetricsLogger:
     def log(self, metrics: dict[str, float], step: int) -> None:
-        assert set(metrics) == {"train/loss"}
+        assert set(metrics) == {
+            "memory/max_active_gib",
+            "memory/max_reserved_gib",
+            "optimizer/lr",
+            "throughput/tflops",
+            "throughput/tokens_per_second_per_gpu",
+            "timing/data_loading_seconds",
+            "timing/end_to_end_seconds",
+            "train/grad_norm",
+            "train/loss",
+            "train/max_loss",
+            "train/n_tokens_seen",
+        }
         assert step > 0
 
     def close(self) -> None:
