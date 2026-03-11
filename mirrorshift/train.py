@@ -6,6 +6,7 @@ from typing import Any, Callable, Iterator, Tuple
 
 import torch
 import torch.distributed as dist
+import torch.nn.functional as F
 import torch.optim as optim
 
 from mirrorshift.checkpointing import CheckpointManager, TrainState
@@ -132,6 +133,29 @@ def compute_global_loss_metrics(
     )
 
 
+def compute_batch_heterogeneity(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+) -> float:
+    per_token_loss = F.cross_entropy(
+        logits.detach().float().reshape(-1, logits.size(-1)),
+        targets.reshape(-1),
+        reduction="none",
+    ).reshape(targets.size(0), -1)
+    per_sequence_loss = per_token_loss.mean(dim=1)
+    local_sum = per_sequence_loss.sum()
+    local_max = per_sequence_loss.max()
+    local_count = torch.tensor(float(per_sequence_loss.numel()), device=logits.device)
+
+    if dist.is_available() and dist.is_initialized():
+        dist.all_reduce(local_sum, op=dist.ReduceOp.SUM)
+        dist.all_reduce(local_max, op=dist.ReduceOp.MAX)
+        dist.all_reduce(local_count, op=dist.ReduceOp.SUM)
+
+    global_mean = local_sum / local_count
+    return float((local_max - global_mean).item())
+
+
 def compute_grad_norm(model: torch.nn.Module, device: torch.device) -> float:
     norm_sq = torch.zeros((), device=device, dtype=torch.float64)
     for parameter in model.parameters():
@@ -213,6 +237,7 @@ def train(
 
         logits = model(x)
         loss_value = loss_fn(logits, y)
+        batch_heterogeneity = compute_batch_heterogeneity(logits, y)
         loss_value.backward()
         grad_norm = compute_grad_norm(model, device)
         opt.step()
@@ -238,6 +263,7 @@ def train(
 
         metrics_logger.log(
             {
+                "train/batch_heterogeneity": batch_heterogeneity,
                 "train/loss": global_avg_loss,
                 "train/max_loss": global_max_loss,
                 "train/grad_norm": grad_norm,
@@ -262,7 +288,7 @@ def train(
 
         if is_primary and (global_step == 1 or global_step % training_config.log_every == 0):
             LOGGER.info(
-                "step=%d/%d loss=%.5f max_loss=%.5f grad_norm=%.4f "
+                "step=%d/%d loss=%.5f max_loss=%.5f batch_het=%.5f grad_norm=%.4f "
                 "tps/gpu=%.2f tflops=%.4f end_to_end=%.4fs data_loading=%.4fs "
                 "memory_active=%.2fGiB memory_reserved=%.2fGiB lr=%.2e "
                 "n_tokens_seen=%d",
@@ -270,6 +296,7 @@ def train(
                 training_config.max_steps,
                 global_avg_loss,
                 global_max_loss,
+                batch_heterogeneity,
                 grad_norm,
                 tokens_per_second_per_gpu,
                 tflops,

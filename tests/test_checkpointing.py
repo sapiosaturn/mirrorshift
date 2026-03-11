@@ -36,11 +36,13 @@ class DummyMetricsLogger:
             "throughput/tokens_per_second_per_gpu",
             "timing/data_loading_seconds",
             "timing/end_to_end_seconds",
+            "train/batch_heterogeneity",
             "train/grad_norm",
             "train/loss",
             "train/max_loss",
             "train/n_tokens_seen",
         }
+        assert metrics["train/batch_heterogeneity"] >= 0.0
         assert step > 0
 
     def close(self) -> None:
