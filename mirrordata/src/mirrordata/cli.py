@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
 
 from mirrordata.planning import SequencePlanSpec, build_sequence_plan
@@ -22,6 +23,7 @@ def _cmd_prep_parquet(args: argparse.Namespace) -> int:
             max_tokens_per_shard=args.max_tokens_per_shard,
             min_document_tokens=args.min_document_tokens,
             max_documents=args.max_documents,
+            log_every_documents=args.log_every_documents,
         )
     )
     print(f"wrote snapshot: {Path(args.output_dir) / 'manifest.json'}")
@@ -99,6 +101,7 @@ def build_parser() -> argparse.ArgumentParser:
     prep.add_argument("--max-tokens-per-shard", type=int, default=50_000_000)
     prep.add_argument("--min-document-tokens", type=int, default=1)
     prep.add_argument("--max-documents", type=int)
+    prep.add_argument("--log-every-documents", type=int, default=10_000)
     prep.set_defaults(func=_cmd_prep_parquet)
 
     plan = subparsers.add_parser("build-plan")
@@ -123,6 +126,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s - %(message)s",
+    )
     parser = build_parser()
     args = parser.parse_args()
     return int(args.func(args))

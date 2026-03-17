@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 import pyarrow as pa
@@ -100,6 +101,36 @@ def test_build_snapshot_from_parquet_respects_max_documents(tmp_path: Path) -> N
     )
 
     assert manifest.total_documents == 2
+
+
+def test_tiktoken_tokenizer_allows_literal_special_token_text() -> None:
+    tokenizer = TiktokenTokenizer("p50k_base")
+
+    token_ids = tokenizer.encode("hello <|endoftext|> world")
+
+    assert len(token_ids) > 0
+
+
+def test_build_snapshot_from_parquet_logs_progress(tmp_path: Path, caplog) -> None:
+    parquet_path = tmp_path / "logged.parquet"
+    _write_parquet(parquet_path, ["alpha beta", "gamma delta"])
+
+    caplog.set_level(logging.INFO, logger="mirrordata.preprocessing.parquet")
+    build_snapshot_from_parquet(
+        ParquetSnapshotConfig(
+            input_paths=(str(parquet_path),),
+            output_dir=str(tmp_path / "snapshot-logged"),
+            snapshot_id="logged",
+            dataset_name="logged",
+            split="train",
+            max_tokens_per_shard=128,
+            log_every_documents=1,
+        )
+    )
+
+    assert "Starting parquet snapshot build" in caplog.text
+    assert "Preprocessing progress:" in caplog.text
+    assert "Finished parquet snapshot build" in caplog.text
 
 
 def test_reference_parquet_smoke() -> None:

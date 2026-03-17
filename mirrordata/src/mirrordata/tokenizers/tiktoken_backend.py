@@ -15,7 +15,8 @@ class TiktokenTokenizer:
         self._encoding = tiktoken.get_encoding(name)
 
     def encode(self, text: str) -> list[int]:
-        return self._encoding.encode(text)
+        # Treat any literal special-token strings in source text as ordinary text.
+        return self._encoding.encode(text, disallowed_special=())
 
     def decode(self, token_ids: Sequence[int]) -> str:
         return self._encoding.decode([int(token_id) for token_id in token_ids])

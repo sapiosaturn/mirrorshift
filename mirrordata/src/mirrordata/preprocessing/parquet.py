@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
@@ -12,6 +13,8 @@ from mirrordata.tokenizers import TiktokenTokenizer
 from .contracts import Document
 from .sources import ParquetTextSource
 from .transforms import append_eos, normalize_text
+
+LOGGER = logging.getLogger("mirrordata.preprocessing.parquet")
 
 
 @dataclass(frozen=True)
@@ -29,6 +32,7 @@ class ParquetSnapshotConfig:
     append_eos_token: bool = True
     token_dtype: str = "uint32"
     max_documents: int | None = None
+    log_every_documents: int = 10_000
     metadata: dict[str, str] = field(default_factory=dict)
 
 
@@ -55,6 +59,18 @@ class ParquetSnapshotPreprocessor:
             batch_size=self.config.batch_size,
             limit_documents=self.config.max_documents,
         )
+        estimated_documents = source.estimate_documents()
+        LOGGER.info(
+            "Starting parquet snapshot build: snapshot_id=%s dataset=%s split=%s "
+            "input_files=%d estimated_documents=%s output_dir=%s tokenizer=%s",
+            self.config.snapshot_id,
+            self.config.dataset_name,
+            self.config.split,
+            len(source.paths),
+            estimated_documents if estimated_documents is not None else "unknown",
+            self.config.output_dir,
+            self.config.tokenizer_name,
+        )
         builder = SnapshotBuilder(
             output_dir=self.config.output_dir,
             snapshot_id=self.config.snapshot_id,
@@ -70,12 +86,56 @@ class ParquetSnapshotPreprocessor:
             },
         )
 
+        documents_seen = 0
+        documents_written = 0
+        documents_skipped = 0
+        tokens_written = 0
+
         for document in source:
+            documents_seen += 1
             token_ids = self._tokenize_document(document)
             if token_ids is None:
+                documents_skipped += 1
+                if (
+                    self.config.log_every_documents > 0
+                    and documents_seen % self.config.log_every_documents == 0
+                ):
+                    LOGGER.info(
+                        "Preprocessing progress: seen=%d written=%d skipped=%d tokens=%d",
+                        documents_seen,
+                        documents_written,
+                        documents_skipped,
+                        tokens_written,
+                    )
                 continue
             builder.write_document(token_ids)
-        return builder.finalize()
+            documents_written += 1
+            tokens_written += len(token_ids)
+            if (
+                self.config.log_every_documents > 0
+                and documents_seen % self.config.log_every_documents == 0
+            ):
+                LOGGER.info(
+                    "Preprocessing progress: seen=%d written=%d skipped=%d tokens=%d",
+                    documents_seen,
+                    documents_written,
+                    documents_skipped,
+                    tokens_written,
+                )
+
+        manifest = builder.finalize()
+        LOGGER.info(
+            "Finished parquet snapshot build: snapshot_id=%s documents_seen=%d "
+            "documents_written=%d documents_skipped=%d total_tokens=%d shards=%d manifest=%s",
+            manifest.snapshot_id,
+            documents_seen,
+            documents_written,
+            documents_skipped,
+            manifest.total_tokens,
+            len(manifest.shards),
+            Path(self.config.output_dir) / "manifest.json",
+        )
+        return manifest
 
 
 def build_snapshot_from_parquet(config: ParquetSnapshotConfig) -> SnapshotManifest:
