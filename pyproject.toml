@@ -9,16 +9,24 @@ description = "my personal repo for transformers implementations and experiments
 requires-python = ">=3.11"
 dependencies = [
     "torch==2.7.1",
-    "tensorboard>=2.18.0",
-    "tiktoken>=0.8.0",
-    "rich>=14.0.0",
+    "tyro>=0.9.35",
+    "wandb>=0.21.1",
+    "mirrordata",
 ]
 
 [dependency-groups]
 dev = ["pytest>=8.3.4"]
 
-[tool.setuptools]
-packages = ["mirrorshift"]
+[tool.setuptools.packages.find]
+include = ["mirrorshift*"]
+
+[tool.uv.workspace]
+members = [
+    "mirrordata",
+]
+
+[tool.uv.sources]
+mirrordata = { workspace = true }
 
 [project.scripts]
 mirrorshift-train = "mirrorshift.train:main"

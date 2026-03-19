@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mirrordata"
+version = "0.1.0"
+description = "Token-first data interfaces and snapshot contracts for mirrorshift"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.4.2",
+    "pyarrow>=23.0.1",
+    "tiktoken>=0.8.0",
+    "torch==2.7.1",
+]
+
+[project.scripts]
+mirrordata = "mirrordata.cli:main"
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["mirrordata*"]

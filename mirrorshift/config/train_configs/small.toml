@@ -1,0 +1,62 @@
+[run]
+spec = "causal_lm"
+log_dir = "runs"
+wandb_project = "mirrorshift"
+wandb_mode = "online"
+manifest_file = "manifest.json"
+config_snapshot_file = "config.json"
+
+[model]
+attention_type = "mla"
+vocab_size = 50281
+num_layers = 2
+embedding_dim = 128
+num_heads = 8
+num_kv_heads = 4
+context_length = 64
+feedforward_dim = 384
+q_lora_rank = 64
+kv_lora_rank = 64
+qk_nope_head_dim = 32
+qk_rope_head_dim = 16
+v_head_dim = 64
+
+[training]
+device = "cpu"
+batch_size = 16
+learning_rate = 5e-4
+lr_warmup_steps = 50
+lr_schedule = "wsd_exponential"
+max_steps = 500
+log_every = 25
+
+[parallelism]
+dp_replicate = 1
+dp_shard = 1
+mixed_precision_param = "float32"
+mixed_precision_reduce = "float32"
+reshard_after_forward = "default"
+bucket_cap_mb = 100
+
+[activation_checkpoint]
+mode = "none"
+selective_ac_option = "2"
+preserve_rng_state = true
+determinism_check = "default"
+debug = false
+early_stop = false
+
+[compile]
+enable = false
+backend = "inductor"
+fullgraph = true
+
+[checkpoint]
+enable = false
+folder = "checkpoints"
+interval = 100
+keep_latest_k = 0
+
+[data]
+snapshot_path = "mirrorshift/datasets/example_train_snapshot"
+plan_path = "mirrorshift/datasets/example_train_plan_ctx64"

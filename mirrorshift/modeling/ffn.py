@@ -23,6 +23,12 @@ class FFN(nn.Module):
         if self.gated:
             self.gate = nn.Linear(model_dim, feedforward_dim, bias=False)
 
+    def init_weights(self) -> None:
+        self.to_hidden.reset_parameters()
+        self.from_hidden.reset_parameters()
+        if self.gated:
+            self.gate.reset_parameters()
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # dimensions of x are batch_size, seq_length, embedding_dim
         # which is also batch_size, seq_length, model_dim

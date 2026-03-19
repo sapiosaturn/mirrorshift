@@ -1,314 +1,485 @@
-"""
-This file contains the core training logic.
-"""
+"""Step-based training entrypoint."""
+
+import logging
+import time
+from typing import Any, Callable, Iterator, Tuple
 
 import torch
-import torch.optim as optim
+import torch.distributed as dist
 import torch.nn.functional as F
-import argparse
-import os
-from typing import Tuple
-from collections import deque
-from torch.utils.data import (
-    DataLoader,
-    Subset,
-    RandomSampler,
-    SequentialSampler
-)
-from torch.utils.tensorboard import SummaryWriter
-import time
+import torch.optim as optim
 
-from mirrorshift.modeling.causal_transformers import CausalTransformer
-from mirrorshift.data import TiktokenTxtDataset
-from mirrorshift.inference import sample
-from mirrorshift.logging_and_metrics import RichLogger
-from mirrorshift.utils import (
-    read_model_config,
-    read_training_config,
+from mirrorshift.checkpointing import CheckpointManager, TrainState
+from mirrorshift.config import (
+    ConfigManager,
+    JobConfig,
     ModelConfig,
     TrainingConfig,
-    get_lr_schedule,
 )
+from mirrorshift.experiments import get_train_spec
+from mirrorshift.infra import (
+    apply_model_infra,
+    barrier_if_distributed,
+    build_runtime_context,
+    clip_grad_norm_,
+    destroy_process_group_if_needed,
+    get_grad_norm,
+    synchronized_run_id,
+)
+from mirrorshift.metrics import MetricsLogger, build_metrics_logger
+from mirrorshift.runtime import (
+    build_meta_model,
+    materialize_initialized_model,
+    resolve_device,
+    set_determinism,
+)
+from mirrorshift.run_manifest import create_run_artifacts, write_run_manifest
+from mirrorshift.run_manifest import discard_staged_run_artifacts, finalize_run_artifacts
+from mirrorshift.utils import get_lr_schedule
 
 BatchType = Tuple[torch.Tensor, torch.Tensor]
-Logits = torch.Tensor
+LossFunction = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
+
+LOGGER = logging.getLogger("mirrorshift.train")
+_GIB_IN_BYTES = 1024**3
+
+def iter_batches(train_loader: Any) -> Iterator[BatchType]:
+    if hasattr(train_loader, "next"):
+        while True:
+            yield train_loader.next()
+    while True:
+        for batch in train_loader:
+            yield batch
 
 
-def sample_and_log(
-    model: CausalTransformer,
-    global_step: int,
-    writer: SummaryWriter,
-    device: str,
-    subset: Subset,
-    model_config: ModelConfig,
-    sampling_length: int,
-    rich_logger: 'RichLogger' = None
-) -> None:
-    model.eval()
-    random_token = torch.randint(
-        low=0, high=model_config.vocab_size, size=(1, 1)
+def apply_resume_offset(train_loader: Any, resume_batch_offset: int) -> int:
+    if resume_batch_offset <= 0:
+        return 0
+
+    load_state_dict = getattr(train_loader, "load_state_dict", None)
+    global_batch_size = getattr(train_loader, "global_batch_size", None)
+    if callable(load_state_dict) and global_batch_size is not None:
+        load_state_dict({"global_sample_cursor": resume_batch_offset * int(global_batch_size)})
+        return 0
+    return resume_batch_offset
+
+
+def log_data_preflight(*, dataset_size: int, batch_size: int, max_steps: int) -> None:
+    required_sequences = batch_size * max_steps
+    if dataset_size < required_sequences:
+        LOGGER.warning(
+            "Dataset will wrap during training: available_sequences=%d required_sequences=%d",
+            dataset_size,
+            required_sequences,
+        )
+
+
+def estimate_num_flops_per_token(
+    model: torch.nn.Module,
+    *,
+    seq_len: int,
+) -> int:
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    embedding_params = sum(
+        p.numel()
+        for name, p in model.named_parameters()
+        if p.requires_grad and "embedding" in name
     )
-    tokens, generated_text = sample(
-        model=model,
-        context=random_token,
-        num_tokens=sampling_length,
-        context_length=model_config.context_length,
-        device=device,
-        subset=subset
-    )
-    
-    rich_logger.update_generation(generated_text, global_step)
-    
-    writer.add_text("Sampled Text", generated_text, global_step)
-    model.train()
-
-def val_eval(
-    model: CausalTransformer,
-    writer: SummaryWriter,
-    global_step: int,
-    val_loader: DataLoader,
-    device: str,
-    rich_logger: 'RichLogger' = None,
-    best_val_loss: float = None
-) -> float:
-    model.eval()
-    total_val_loss = 0.0
-    val_batches = 0
-    with torch.no_grad():
-        for val_batch in val_loader:
-            x, y = val_batch
-            x = x.to(device)
-            y = y.to(device)
-            logits = model(x)
-            loss_value = F.cross_entropy(
-                logits.view(logits.size(0) * logits.size(1), logits.size(2)),
-                y.view(y.size(0) * y.size(1)),
+    model_config = getattr(model, "model_config", None)
+    if isinstance(model_config, ModelConfig):
+        if model_config.attention_type == "gqa":
+            head_dims = 2 * (model_config.embedding_dim // model_config.num_heads)
+        else:
+            head_dims = (
+                int(model_config.qk_nope_head_dim or 0)
+                + int(model_config.qk_rope_head_dim or 0)
+                + int(model_config.v_head_dim or 0)
             )
-            loss_scalar = loss_value.item()
-            total_val_loss += loss_scalar
-            val_batches += 1
-    avg_val_loss = total_val_loss/val_batches
-    writer.add_scalar("Loss/val", avg_val_loss, global_step)
-    val_perplexity = torch.exp(torch.tensor(avg_val_loss)).item()
-    writer.add_scalar("Perplexity/val", val_perplexity, global_step)
+        attention_term = (
+            6
+            * model_config.num_layers
+            * model_config.num_heads
+            * head_dims
+            * seq_len
+        )
+        return 6 * max(0, trainable_params - embedding_params) + attention_term
+    return 6 * trainable_params
 
-    rich_logger.update_validation(global_step, avg_val_loss, val_perplexity, best_val_loss)
 
-    model.train()
-    return avg_val_loss
+def compute_global_loss_metrics(
+    loss_value: torch.Tensor,
+    targets: torch.Tensor,
+) -> tuple[float, float, int]:
+    device = loss_value.device
+    local_token_count = torch.tensor(float(targets.numel()), device=device)
+    local_loss_sum = loss_value.detach().float() * local_token_count
+    local_avg_loss = local_loss_sum / local_token_count
+
+    if dist.is_available() and dist.is_initialized():
+        global_loss_sum = local_loss_sum.clone()
+        global_token_count = local_token_count.clone()
+        global_max_loss = local_avg_loss.clone()
+        dist.all_reduce(global_loss_sum, op=dist.ReduceOp.SUM)
+        dist.all_reduce(global_token_count, op=dist.ReduceOp.SUM)
+        dist.all_reduce(global_max_loss, op=dist.ReduceOp.MAX)
+        global_avg_loss = global_loss_sum / global_token_count
+        return (
+            float(global_avg_loss.item()),
+            float(global_max_loss.item()),
+            int(global_token_count.item()),
+        )
+
+    return (
+        float(local_avg_loss.item()),
+        float(local_avg_loss.item()),
+        int(local_token_count.item()),
+    )
+
+
+def compute_batch_heterogeneity(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+) -> float:
+    per_token_loss = F.cross_entropy(
+        logits.detach().float().reshape(-1, logits.size(-1)),
+        targets.reshape(-1),
+        reduction="none",
+    ).reshape(targets.size(0), -1)
+    per_sequence_loss = per_token_loss.mean(dim=1)
+    local_sum = per_sequence_loss.sum()
+    local_max = per_sequence_loss.max()
+    local_count = torch.tensor(float(per_sequence_loss.numel()), device=logits.device)
+
+    if dist.is_available() and dist.is_initialized():
+        dist.all_reduce(local_sum, op=dist.ReduceOp.SUM)
+        dist.all_reduce(local_max, op=dist.ReduceOp.MAX)
+        dist.all_reduce(local_count, op=dist.ReduceOp.SUM)
+
+    global_mean = local_sum / local_count
+    return float((local_max - global_mean).item())
+
+
+def compute_grad_norm(
+    model: torch.nn.Module,
+    *,
+    max_grad_norm: float | None = None,
+) -> float:
+    parameters = [parameter for parameter in model.parameters() if parameter.grad is not None]
+    if max_grad_norm is None:
+        total_norm = get_grad_norm(parameters, foreach=True)
+    else:
+        total_norm = clip_grad_norm_(
+            parameters,
+            max_grad_norm,
+            foreach=True,
+        )
+    return float(total_norm.item())
+
+
+def get_peak_memory_gib(device: torch.device) -> tuple[float, float]:
+    if device.type != "cuda":
+        return 0.0, 0.0
+
+    device_index = (
+        device.index if device.index is not None else torch.cuda.current_device()
+    )
+    max_active = torch.cuda.max_memory_allocated(device_index) / _GIB_IN_BYTES
+    max_reserved = torch.cuda.max_memory_reserved(device_index) / _GIB_IN_BYTES
+    return float(max_active), float(max_reserved)
+
 
 def train(
-    model: CausalTransformer,
-    train_loader: DataLoader,
-    val_loader: DataLoader,
+    model: torch.nn.Module,
+    train_loader: Any,
     opt: optim.AdamW,
-    device: str,
+    loss_fn: LossFunction,
+    device: str | torch.device,
     training_config: TrainingConfig,
-    model_config: ModelConfig,
-    writer: SummaryWriter,
-) -> None:
-    global_step: int = 0
-
-    steps_per_epoch = len(train_loader.dataset) // training_config.batch_size
-    total_steps = steps_per_epoch * training_config.num_epochs
-
+    metrics_logger: MetricsLogger,
+    train_state: TrainState | None = None,
+    checkpointer: CheckpointManager | None = None,
+    resume_batch_offset: int = 0,
+    is_primary: bool = True,
+    data_parallel_world_size: int = 1,
+    n_tokens_seen_start: int = 0,
+) -> int:
     lr_schedule = get_lr_schedule(
         schedule=training_config.lr_schedule,
         max_lr=training_config.learning_rate,
         warmup_steps=training_config.lr_warmup_steps,
-        total_steps=total_steps
+        total_steps=training_config.max_steps,
+    )
+    batch_iter = iter_batches(train_loader)
+    active_train_state = train_state if train_state is not None else TrainState()
+    device = torch.device(device)
+    num_flops_per_token: int | None = None
+    n_tokens_seen = int(n_tokens_seen_start)
+
+    model.train()
+    if active_train_state.step >= training_config.max_steps:
+        return active_train_state.step
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
+
+    for _ in range(apply_resume_offset(train_loader, resume_batch_offset)):
+        next(batch_iter)
+
+    for global_step in range(active_train_state.step + 1, training_config.max_steps + 1):
+        step_start_time = time.perf_counter()
+        data_loading_start_time = step_start_time
+        x, y = next(batch_iter)
+        x = x.to(device)
+        y = y.to(device)
+        data_loading_time = time.perf_counter() - data_loading_start_time
+        if num_flops_per_token is None:
+            num_flops_per_token = estimate_num_flops_per_token(
+                model,
+                seq_len=y.size(1),
+            )
+
+        opt.zero_grad(set_to_none=True)
+        lr = lr_schedule(global_step - 1)
+        for param_group in opt.param_groups:
+            param_group["lr"] = lr
+
+        logits = model(x)
+        loss_value = loss_fn(logits, y)
+        batch_heterogeneity = compute_batch_heterogeneity(logits, y)
+        loss_value.backward()
+        grad_norm = compute_grad_norm(
+            model,
+            max_grad_norm=training_config.max_grad_norm,
+        )
+        opt.step()
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        end_to_end_time = time.perf_counter() - step_start_time
+
+        global_avg_loss, global_max_loss, global_tokens_this_step = (
+            compute_global_loss_metrics(loss_value, y)
+        )
+        n_tokens_seen += global_tokens_this_step
+        tokens_per_second_per_gpu = (
+            global_tokens_this_step / max(1, data_parallel_world_size)
+        ) / max(end_to_end_time, 1e-9)
+        tflops = (
+            float(num_flops_per_token) * tokens_per_second_per_gpu / 1e12
+            if num_flops_per_token is not None
+            else 0.0
+        )
+        max_active_gib, max_reserved_gib = get_peak_memory_gib(device)
+        if device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(device)
+
+        metrics_logger.log(
+            {
+                "train/batch_heterogeneity": batch_heterogeneity,
+                "train/loss": global_avg_loss,
+                "train/max_loss": global_max_loss,
+                "train/grad_norm": grad_norm,
+                "train/n_tokens_seen": float(n_tokens_seen),
+                "optimizer/lr": lr,
+                "throughput/tokens_per_second_per_gpu": tokens_per_second_per_gpu,
+                "throughput/tflops": tflops,
+                "timing/end_to_end_seconds": end_to_end_time,
+                "timing/data_loading_seconds": data_loading_time,
+                "memory/max_active_gib": max_active_gib,
+                "memory/max_reserved_gib": max_reserved_gib,
+            },
+            step=global_step,
+        )
+
+        active_train_state.step = global_step
+        if checkpointer is not None:
+            checkpointer.save(
+                global_step,
+                last_step=global_step == training_config.max_steps,
+            )
+
+        if is_primary and (global_step == 1 or global_step % training_config.log_every == 0):
+            LOGGER.info(
+                "step=%d/%d loss=%.5f max_loss=%.5f batch_het=%.5f grad_norm=%.4f "
+                "tps/gpu=%.2f tflops=%.4f end_to_end=%.4fs data_loading=%.4fs "
+                "memory_active=%.2fGiB memory_reserved=%.2fGiB lr=%.2e "
+                "n_tokens_seen=%d",
+                global_step,
+                training_config.max_steps,
+                global_avg_loss,
+                global_max_loss,
+                batch_heterogeneity,
+                grad_norm,
+                tokens_per_second_per_gpu,
+                tflops,
+                end_to_end_time,
+                data_loading_time,
+                max_active_gib,
+                max_reserved_gib,
+                lr,
+                n_tokens_seen,
+            )
+    return active_train_state.step
+
+
+def main() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s - %(message)s",
     )
 
-    step_times = deque(maxlen=100) # sliding window average
-    step_start_time = time.time()
-    best_val_loss = float('inf')
+    config: JobConfig = ConfigManager().parse_args()
+    base_device_type = resolve_device(config.training.device)
+    runtime_context = build_runtime_context(base_device_type, config.parallelism)
+    metrics_logger: MetricsLogger | None = None
+    artifacts = None
 
-    # Initialize the RichLogger
-    rich_logger = RichLogger(total_steps=total_steps, batch_size=training_config.batch_size)
+    try:
+        if runtime_context.is_primary:
+            config.maybe_log(LOGGER)
 
-    with rich_logger:
-        for e in range(training_config.num_epochs):
-            rich_logger.print_epoch_start(e)
-
-            running_loss: float = 0.0
-
-            for i, batch in enumerate(train_loader):
-                step_start_time = time.time()
-
-                x: torch.Tensor
-                y: torch.Tensor
-                batch: BatchType = batch
-                x, y = batch
-                x = x.to(device)
-                y = y.to(device)
-                opt.zero_grad()
-
-                for param_group in opt.param_groups:
-                    param_group['lr'] = lr_schedule(global_step)
-
-                writer.add_scalar("Learning Rate", opt.param_groups[0]['lr'], global_step)
-
-                logits: Logits = model(x)
-                loss_value = F.cross_entropy(
-                    logits.view(logits.size(0) * logits.size(1), logits.size(2)),
-                    y.view(y.size(0) * y.size(1)),
-                )
-
-                loss_value.backward()
-                loss_scalar = loss_value.item()
-                opt.step()
-                global_step += 1
-
-                step_time = time.time() - step_start_time
-                step_times.append(step_time)
-
-                avg_step_time = sum(step_times) / len(step_times)
-                steps_per_second = 1.0 / avg_step_time if avg_step_time > 0 else 0
-
-                writer.add_scalar("Loss/train", loss_scalar, global_step)
-                writer.add_scalar(
-                    "Perplexity/train",
-                    torch.exp(torch.tensor(loss_scalar)).item(),
-                    global_step
-                )
-                writer.add_scalar("Performance/seconds_per_step", avg_step_time, global_step)
-                writer.add_scalar("Performance/steps_per_second", steps_per_second, global_step)
-                running_loss += loss_scalar
-
-                # Update the live table more frequently than just on reporting steps
-                if global_step % max(1, training_config.reporting_steps // 10) == 0:
-                    last_loss = running_loss / max(1, global_step % training_config.reporting_steps or training_config.reporting_steps)
-                    last_perplexity = torch.exp(torch.tensor(last_loss)).item()
-                    
-                    rich_logger.update_progress(
-                        epoch=e,
-                        step=global_step,
-                        loss=last_loss,
-                        perplexity=last_perplexity,
-                        learning_rate=opt.param_groups[0]['lr'],
-                        avg_step_time=avg_step_time,
-                        steps_per_second=steps_per_second
-                    )
-
-                if global_step % training_config.reporting_steps == 0:
-                    running_loss = 0.0
-
-                if global_step % training_config.validation_eval_steps == 0:
-                    step_times.clear()
-                    val_loss = val_eval(
-                        model=model,
-                        writer=writer,
-                        global_step=global_step,
-                        val_loader=val_loader,
-                        device=device,
-                        rich_logger=rich_logger,
-                        best_val_loss=best_val_loss
-                    )
-                    if val_loss < best_val_loss:
-                        best_val_loss = val_loss
-
-                if global_step % training_config.sampling_steps == 0:
-                    step_times.clear()
-                    sample_and_log(
-                        model=model,
-                        global_step=global_step,
-                        writer=writer,
-                        device=device,
-                        subset=train_loader.dataset,
-                        model_config=model_config,
-                        sampling_length=training_config.sampling_length_multiplier * model_config.context_length,
-                        rich_logger=rich_logger
-                    )
-
-def main():
-    """Entry point for the mirrorshift-train command."""
-    # default values are for tiny model
-    parser = argparse.ArgumentParser(description="Train a mirrorshift transformer model")
-    parser.add_argument('--model-config', type=str, default='mirrorshift/config/model_configs/small.json',
-                      help='Path to model configuration file')
-    parser.add_argument('--training-config', type=str, default='mirrorshift/config/training_configs/small.json',
-                      help='Path to training configuration file')
-    parser.add_argument('--dataset', type=str, default='mirrorshift/datasets/coqa_stories.txt',
-                      help='Path to training text file')
-    args = parser.parse_args()
-
-    model_config: ModelConfig = read_model_config(args.model_config)
-    training_config: TrainingConfig = read_training_config(args.training_config)
-    
-    # Continue with the rest of the training process
-    writer: SummaryWriter = SummaryWriter()
-
-    full_dataset: TiktokenTxtDataset = TiktokenTxtDataset(
-        args.dataset, model_config.context_length
-    )
-
-    # this is mainly useful with char-level tokenizers
-    assert full_dataset.get_vocab_size() == model_config.vocab_size, \
-    f"dataset vocab size is {full_dataset.get_vocab_size()}, model_config vocab size is {model_config.vocab_size}"
-
-    train_size = int(len(full_dataset) * (1-training_config.validation_split))
-    val_size = len(full_dataset) - train_size
-
-    train_dataset, val_dataset = torch.utils.data.random_split(
-        dataset=full_dataset,
-        lengths=[train_size, val_size],
-        generator=torch.Generator()
-    )
-
-    model = CausalTransformer(model_config=model_config)
-
-    device: str
-    if training_config.device == "auto":
-        if torch.cuda.is_available():
-            device = "cuda"
-            torch.set_float32_matmul_precision("high")
+        run_id = synchronized_run_id(config.run.id, runtime_context)
+        if runtime_context.is_primary:
+            artifacts = create_run_artifacts(
+                config,
+                resolved_run_id=run_id,
+                write_files=True,
+            )
         else:
-            device = "cpu"
-    else:
-        device = training_config.device
+            artifacts = create_run_artifacts(
+                config,
+                resolved_run_id=run_id,
+                write_files=False,
+            )
 
-    model = model.to(device)
+        if runtime_context.is_primary:
+            LOGGER.info("run_id=%s run_dir=%s", artifacts.run_id, artifacts.run_dir)
 
-    opt: optim.AdamW = optim.AdamW(model.parameters(), lr=training_config.learning_rate)
+        set_determinism(str(runtime_context.device), config.debug)
 
-    model = torch.compile(model)
+        train_spec = get_train_spec(config.run.spec)
+        train_data = train_spec.build_data(config, artifacts.run_dir, runtime_context)
 
-    train_sampler = RandomSampler(train_dataset)
-    val_sampler = SequentialSampler(val_dataset)
-    train_loader: DataLoader = DataLoader(
-        train_dataset,
-        batch_size=training_config.batch_size,
-        sampler=train_sampler
-    )
-    val_loader: DataLoader = DataLoader(
-        val_dataset,
-        batch_size=training_config.batch_size,
-        sampler=val_sampler
-    )
+        if train_data.vocab_size != config.model.vocab_size:
+            raise ValueError(
+                "Dataset vocab size does not match model config vocab size: "
+                f"{train_data.vocab_size} vs {config.model.vocab_size}"
+            )
+        if train_data.dataset_size < config.training.batch_size:
+            raise ValueError(
+                "Dataset must have at least batch_size sequences. "
+                f"len(dataset)={train_data.dataset_size} batch_size={config.training.batch_size}"
+            )
+        train_loader = train_data.train_loader
+        if len(train_loader) == 0:
+            raise ValueError("train_loader is empty for the provided configuration")
+        if runtime_context.is_primary:
+            log_data_preflight(
+                dataset_size=train_data.dataset_size,
+                batch_size=config.training.batch_size,
+                max_steps=config.training.max_steps,
+            )
 
-    trainable_params: int = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print("\n╭─ Training Info ──────────────────────")
-    print(f"│ Total dataset size:   {len(full_dataset)}")
-    print(f"│ Trainable parameters: {trainable_params}")
-    print(f"│ Training set size:    {len(train_dataset)}")
-    print(f"│ Training on device:   {device}")
-    print(f"│ Validation set size:  {len(val_dataset)}")
-    print(  "╰──────────────────────────────────────")
+        model = build_meta_model(train_spec.build_model, config.model)
+        model = apply_model_infra(
+            model,
+            runtime_context=runtime_context,
+            parallelism_config=config.parallelism,
+            activation_checkpoint_config=config.activation_checkpoint,
+            compile_config=config.compile,
+        )
+        model = materialize_initialized_model(model, runtime_context.device)
+        if runtime_context.is_primary and not artifacts.resumed:
+            artifacts = finalize_run_artifacts(artifacts)
+        barrier_if_distributed(runtime_context)
 
-    train(
-        model=model,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        opt=opt,
-        device=device,
-        training_config=training_config,
-        model_config=model_config,
-        writer=writer,
-    )
+        opt = optim.AdamW(model.parameters(), lr=config.training.learning_rate)
+        train_state = TrainState()
+        checkpointer = CheckpointManager(
+            config=config.checkpoint,
+            run_dir=artifacts.run_dir,
+            model=model,
+            optimizer=opt,
+            train_state=train_state,
+            train_loader=train_loader,
+            data_identity=train_data.data_identity,
+            is_primary=runtime_context.is_primary,
+            is_distributed=runtime_context.is_distributed,
+        )
+        if config.checkpoint.load_step is not None:
+            checkpointer.load()
+            if runtime_context.is_primary:
+                LOGGER.info("Resuming training from step=%d", train_state.step)
 
-    writer.flush()
-    
+        metrics_logger = build_metrics_logger(
+            config=config,
+            run_id=artifacts.run_id,
+            run_dir=artifacts.run_dir,
+            is_primary=runtime_context.is_primary,
+        )
+
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        if not artifacts.resumed and runtime_context.is_primary:
+            write_run_manifest(
+                artifacts=artifacts,
+                config=config,
+                dataset_size=train_data.dataset_size,
+                trainable_params=trainable_params,
+                device=str(runtime_context.device),
+            )
+        elif artifacts.resumed and runtime_context.is_primary:
+            LOGGER.info(
+                "Reusing existing config snapshot=%s and run manifest=%s",
+                artifacts.config_snapshot_path,
+                artifacts.manifest_path,
+            )
+
+        if runtime_context.is_primary:
+            LOGGER.info(
+                "dataset_size=%d trainable_params=%d device=%s max_steps=%d",
+                train_data.dataset_size,
+                trainable_params,
+                runtime_context.device,
+                config.training.max_steps,
+            )
+            LOGGER.info(
+                "config_snapshot=%s run_manifest=%s",
+                artifacts.config_snapshot_path,
+                artifacts.manifest_path,
+            )
+
+        final_step = train(
+            model=model,
+            train_loader=train_loader,
+            opt=opt,
+            loss_fn=train_spec.loss_fn,
+            device=runtime_context.device,
+            training_config=config.training,
+            metrics_logger=metrics_logger,
+            train_state=train_state,
+            checkpointer=checkpointer,
+            resume_batch_offset=(
+                0
+                if checkpointer.restored_loader_state
+                else train_state.step if train_data.exact_resume else 0
+            ),
+            is_primary=runtime_context.is_primary,
+            data_parallel_world_size=runtime_context.batch_world_size,
+            n_tokens_seen_start=(
+                train_state.step
+                * config.training.batch_size
+                * config.model.context_length
+            ),
+        )
+    finally:
+        if metrics_logger is not None:
+            metrics_logger.close()
+        if runtime_context.is_primary:
+            discard_staged_run_artifacts(artifacts)
+        destroy_process_group_if_needed(runtime_context)
+
+    if runtime_context.is_primary:
+        LOGGER.info("Training complete at step=%d", final_step)
     return 0
 
-if __name__ == '__main__':
-    main()
+
+if __name__ == "__main__":
+    raise SystemExit(main())

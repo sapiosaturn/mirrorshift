@@ -12,6 +12,14 @@ class DecoderBlock(nn.Module):
         self.attention_block = attention_block
         self.ff_block = ffn
 
+    def init_weights(self) -> None:
+        init_attention = getattr(self.attention_block, "init_weights", None)
+        if callable(init_attention):
+            init_attention()
+        init_ffn = getattr(self.ff_block, "init_weights", None)
+        if callable(init_ffn):
+            init_ffn()
+
     def forward(self, x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
         # should be straightforward, dimensions stay the same
         output = F.rms_norm(x, (x.size(-1),))  # last dim is embedding_dim
@@ -29,6 +37,14 @@ class ParallelDecoderBlock(nn.Module):
         super().__init__()
         self.attention_block = attention_block
         self.ff_block = ffn
+
+    def init_weights(self) -> None:
+        init_attention = getattr(self.attention_block, "init_weights", None)
+        if callable(init_attention):
+            init_attention()
+        init_ffn = getattr(self.ff_block, "init_weights", None)
+        if callable(init_ffn):
+            init_ffn()
 
     def forward(self, x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
         residual = x
