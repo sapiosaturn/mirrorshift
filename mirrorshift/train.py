@@ -21,7 +21,9 @@ from mirrorshift.infra import (
     apply_model_infra,
     barrier_if_distributed,
     build_runtime_context,
+    clip_grad_norm_,
     destroy_process_group_if_needed,
+    get_grad_norm,
     synchronized_run_id,
 )
 from mirrorshift.metrics import MetricsLogger, build_metrics_logger
@@ -156,17 +158,21 @@ def compute_batch_heterogeneity(
     return float((local_max - global_mean).item())
 
 
-def compute_grad_norm(model: torch.nn.Module, device: torch.device) -> float:
-    norm_sq = torch.zeros((), device=device, dtype=torch.float64)
-    for parameter in model.parameters():
-        if parameter.grad is None:
-            continue
-        grad = parameter.grad.detach()
-        norm_sq += torch.sum(grad.float() * grad.float(), dtype=torch.float64)
-
-    if dist.is_available() and dist.is_initialized():
-        dist.all_reduce(norm_sq, op=dist.ReduceOp.SUM)
-    return float(torch.sqrt(norm_sq).item())
+def compute_grad_norm(
+    model: torch.nn.Module,
+    *,
+    max_grad_norm: float | None = None,
+) -> float:
+    parameters = [parameter for parameter in model.parameters() if parameter.grad is not None]
+    if max_grad_norm is None:
+        total_norm = get_grad_norm(parameters, foreach=True)
+    else:
+        total_norm = clip_grad_norm_(
+            parameters,
+            max_grad_norm,
+            foreach=True,
+        )
+    return float(total_norm.item())
 
 
 def get_peak_memory_gib(device: torch.device) -> tuple[float, float]:
@@ -239,7 +245,10 @@ def train(
         loss_value = loss_fn(logits, y)
         batch_heterogeneity = compute_batch_heterogeneity(logits, y)
         loss_value.backward()
-        grad_norm = compute_grad_norm(model, device)
+        grad_norm = compute_grad_norm(
+            model,
+            max_grad_norm=training_config.max_grad_norm,
+        )
         opt.step()
         if device.type == "cuda":
             torch.cuda.synchronize(device)

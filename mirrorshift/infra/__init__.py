@@ -7,6 +7,7 @@ from mirrorshift.infra.distributed import (
     destroy_process_group_if_needed,
     synchronized_run_id,
 )
+from mirrorshift.infra.grad_norm import clip_grad_norm_, get_grad_norm
 from mirrorshift.infra.parallel_dims import ParallelDims
 from mirrorshift.infra.parallelize import apply_model_infra
 
@@ -18,6 +19,8 @@ __all__ = [
     "apply_model_infra",
     "barrier_if_distributed",
     "build_runtime_context",
+    "clip_grad_norm_",
     "destroy_process_group_if_needed",
+    "get_grad_norm",
     "synchronized_run_id",
 ]

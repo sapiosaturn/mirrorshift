@@ -57,6 +57,7 @@ class TrainingConfig:
     device: DeviceName = "cpu"
     batch_size: int = 16
     learning_rate: float = 5e-4
+    max_grad_norm: float | None = None
     lr_warmup_steps: int = 50
     lr_schedule: ScheduleName = "wsd_exponential"
     max_steps: int = 500
@@ -143,6 +144,8 @@ def validate_training_config(config: TrainingConfig) -> None:
         raise ValueError("training.batch_size must be > 0")
     if config.learning_rate <= 0:
         raise ValueError("training.learning_rate must be > 0")
+    if config.max_grad_norm is not None and config.max_grad_norm <= 0:
+        raise ValueError("training.max_grad_norm must be > 0 when provided")
     if config.lr_warmup_steps < 0:
         raise ValueError("training.lr_warmup_steps must be >= 0")
     if config.max_steps <= 0:

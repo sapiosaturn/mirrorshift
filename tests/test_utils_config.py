@@ -119,6 +119,7 @@ def test_validate_training_config_invalid_device() -> None:
         device="metal",  # type: ignore[arg-type]
         batch_size=4,
         learning_rate=1e-3,
+        max_grad_norm=None,
         lr_warmup_steps=0,
         lr_schedule="linear_warmup",
         max_steps=10,
@@ -131,6 +132,11 @@ def test_validate_training_config_invalid_device() -> None:
 def test_validate_debug_config_negative_seed() -> None:
     with pytest.raises(ValueError, match="debug.seed must be >= 0"):
         validate_debug_config(DebugConfig(seed=-1))
+
+
+def test_validate_training_config_rejects_non_positive_max_grad_norm() -> None:
+    with pytest.raises(ValueError, match="training.max_grad_norm must be > 0"):
+        validate_training_config(TrainingConfig(max_grad_norm=0.0))
 
 
 def test_validate_parallelism_config_invalid_degree() -> None:

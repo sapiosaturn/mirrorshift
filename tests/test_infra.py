@@ -17,6 +17,7 @@ from mirrorshift.infra.activation_checkpoint import apply_activation_checkpointi
 from mirrorshift.infra.compile import apply_compile
 from mirrorshift.infra.discovery import get_transformer_block_container
 from mirrorshift.infra.distributed import build_runtime_context
+from mirrorshift.infra.grad_norm import clip_grad_norm_, get_grad_norm
 from mirrorshift.infra.parallel_dims import ParallelDims
 from mirrorshift.infra.parallelize import apply_ddp, apply_fsdp
 from mirrorshift.modeling.causal_transformers import CausalTransformer
@@ -173,3 +174,38 @@ def test_apply_fsdp_on_meta_model_materializes_after_wrapping() -> None:
         y.sum().backward()
 
         assert y.shape == (2, 8, 32)
+
+
+def test_get_grad_norm_handles_fsdp_dtensor_grads() -> None:
+    with single_rank_process_group():
+        runtime_context = _single_rank_runtime_context()
+        model = CausalTransformer(tiny_model_config())
+        model = apply_fsdp(model, runtime_context, ParallelismConfig())
+
+        x = torch.randint(0, 32, (2, 8))
+        y = model(x)
+        y.sum().backward()
+
+        grad_norm = get_grad_norm(model.parameters(), foreach=True)
+
+        assert isinstance(grad_norm, torch.Tensor)
+        assert grad_norm.ndim == 0
+        assert grad_norm.item() > 0
+
+
+def test_clip_grad_norm_handles_fsdp_dtensor_grads() -> None:
+    with single_rank_process_group():
+        runtime_context = _single_rank_runtime_context()
+        model = CausalTransformer(tiny_model_config())
+        model = apply_fsdp(model, runtime_context, ParallelismConfig())
+
+        x = torch.randint(0, 32, (2, 8))
+        y = model(x)
+        y.sum().backward()
+
+        unclipped_norm = get_grad_norm(model.parameters(), foreach=True).item()
+        returned_norm = clip_grad_norm_(model.parameters(), max_norm=0.1, foreach=True)
+        clipped_norm = get_grad_norm(model.parameters(), foreach=True).item()
+
+        assert returned_norm.item() == pytest.approx(unclipped_norm)
+        assert clipped_norm <= 0.1001
