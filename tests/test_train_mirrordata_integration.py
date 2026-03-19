@@ -224,3 +224,65 @@ def test_main_cleans_staged_run_dir_after_startup_failure(tmp_path, monkeypatch)
 
     assert main() == 0
     assert (run_dir / "retry-run").is_dir()
+
+
+def test_main_trains_with_fake_data_without_snapshot_or_plan(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "fake-data.toml"
+    run_dir = tmp_path / "runs"
+    config_path.write_text(
+        dedent(
+            f"""
+            [run]
+            spec = "causal_lm"
+            log_dir = "{run_dir}"
+            id = "fake-data-smoke"
+            wandb_mode = "disabled"
+
+            [model]
+            attention_type = "gqa"
+            vocab_size = 128
+            num_layers = 1
+            embedding_dim = 32
+            num_heads = 4
+            num_kv_heads = 2
+            context_length = 8
+            feedforward_dim = 64
+
+            [training]
+            device = "cpu"
+            batch_size = 2
+            learning_rate = 0.001
+            lr_warmup_steps = 1
+            lr_schedule = "linear_warmup"
+            max_steps = 2
+            log_every = 1
+
+            [compile]
+            enable = false
+
+            [data]
+            snapshot_path = "{tmp_path / 'missing-snapshot'}"
+            plan_path = "{tmp_path / 'missing-plan'}"
+            """
+        )
+    )
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "mirrorshift-train",
+            f"--job.config_file={config_path}",
+            "--use-fake-data",
+        ],
+    )
+
+    assert main() == 0
+
+    output_run_dir = run_dir / "fake-data-smoke"
+    manifest_payload = json.loads((output_run_dir / "manifest.json").read_text())
+    config_payload = json.loads((output_run_dir / "config.json").read_text())
+
+    assert manifest_payload["data_snapshot_path"] == str((tmp_path / "missing-snapshot").resolve())
+    assert manifest_payload["data_plan_path"] == str((tmp_path / "missing-plan").resolve())
+    assert "use_fake_data" not in config_payload["data"]

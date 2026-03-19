@@ -32,6 +32,7 @@ class ConfigManager:
     def parse_args(self, args: list[str] | None = None) -> JobConfig:
         if args is None:
             args = sys.argv[1:]
+        args = self._normalize_transient_aliases(args)
         toml_values, config_path = self._maybe_load_toml(args)
         base_config = (
             self._dict_to_dataclass(self.config_cls, toml_values)
@@ -42,6 +43,15 @@ class ConfigManager:
         self.config = self._normalize_paths(parsed, config_path)
         self._validate_config(self.config)
         return self.config
+
+    def _normalize_transient_aliases(self, args: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for arg in args:
+            if arg in {"--use-fake-data", "--use_fake_data"}:
+                normalized.append("--data.use-fake-data")
+            else:
+                normalized.append(arg)
+        return normalized
 
     def _maybe_load_toml(self, args: list[str]) -> tuple[dict[str, Any] | None, Path]:
         file_path, is_explicit = self._extract_config_path(args)

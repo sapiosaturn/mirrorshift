@@ -221,6 +221,12 @@ def test_config_manager_parses_data_toml_and_cli(tmp_path: Path) -> None:
     assert config.data.plan_path == str((original_cwd / "plan-root").resolve())
 
 
+def test_config_manager_supports_top_level_use_fake_data_flag() -> None:
+    config = ConfigManager().parse_args(["--use-fake-data"])
+
+    assert config.data.use_fake_data is True
+
+
 def test_config_manager_resolves_run_log_dir_relative_to_toml(tmp_path: Path, monkeypatch) -> None:
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
@@ -329,6 +335,13 @@ def test_job_config_logs_resolved_config_unconditionally(caplog: pytest.LogCaptu
         config.maybe_log(logger)
 
     assert "Resolved config" in caplog.text
+
+
+def test_job_config_to_dict_excludes_fake_data_by_default() -> None:
+    config = ConfigManager().parse_args(["--use-fake-data"])
+
+    assert "use_fake_data" not in config.to_dict()["data"]
+    assert config.to_dict(include_transient=True)["data"]["use_fake_data"] is True
 
 
 def test_get_lr_schedule_unknown_name() -> None:

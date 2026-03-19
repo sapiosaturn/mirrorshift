@@ -101,6 +101,7 @@ class CompileConfig:
 class DataConfig:
     snapshot_path: str = "mirrorshift/datasets/example_train_snapshot"
     plan_path: str = "mirrorshift/datasets/example_train_plan_ctx64"
+    use_fake_data: bool = False
 
 
 @dataclass(frozen=True)
@@ -127,13 +128,16 @@ class JobConfig:
     data: DataConfig = field(default_factory=DataConfig)
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
 
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+    def to_dict(self, *, include_transient: bool = False) -> dict[str, Any]:
+        payload = asdict(self)
+        if not include_transient:
+            payload.get("data", {}).pop("use_fake_data", None)
+        return payload
 
     def maybe_log(self, logger: Any) -> None:
         logger.info(
             "Resolved config:\n%s",
-            json.dumps(self.to_dict(), indent=2, sort_keys=True),
+            json.dumps(self.to_dict(include_transient=True), indent=2, sort_keys=True),
         )
 
 
@@ -261,6 +265,8 @@ def validate_checkpoint_config(config: CheckpointConfig) -> None:
 
 
 def validate_data_config(config: DataConfig) -> None:
+    if config.use_fake_data:
+        return
     if not config.snapshot_path:
         raise ValueError("data.snapshot_path must be non-empty")
     if not config.plan_path:
