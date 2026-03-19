@@ -2,7 +2,7 @@
 
 import sys
 import tomllib
-from dataclasses import fields, is_dataclass, replace
+from dataclasses import fields, is_dataclass
 from pathlib import Path
 from typing import Any, Type
 
@@ -33,14 +33,13 @@ class ConfigManager:
         if args is None:
             args = sys.argv[1:]
         args = self._normalize_transient_aliases(args)
-        toml_values, config_path = self._maybe_load_toml(args)
+        toml_values = self._maybe_load_toml(args)
         base_config = (
             self._dict_to_dataclass(self.config_cls, toml_values)
             if toml_values is not None
             else self.config_cls()
         )
-        parsed = tyro.cli(self.config_cls, args=args, default=base_config)
-        self.config = self._normalize_paths(parsed, config_path)
+        self.config = tyro.cli(self.config_cls, args=args, default=base_config)
         self._validate_config(self.config)
         return self.config
 
@@ -53,21 +52,24 @@ class ConfigManager:
                 normalized.append(arg)
         return normalized
 
-    def _maybe_load_toml(self, args: list[str]) -> tuple[dict[str, Any] | None, Path]:
+    def _maybe_load_toml(self, args: list[str]) -> dict[str, Any] | None:
         file_path, is_explicit = self._extract_config_path(args)
+        if file_path is None:
+            return None
+
         path = Path(file_path)
         if not path.exists():
-            reason = "Config file does not exist" if is_explicit else "Default config file does not exist"
-            raise FileNotFoundError(f"{reason}: {path}")
+            if is_explicit:
+                raise FileNotFoundError(f"Config file does not exist: {path}")
+            return None
 
         with path.open("rb") as file:
             parsed = tomllib.load(file)
         if not isinstance(parsed, dict):
             raise ValueError(f"Invalid TOML root in {path}; expected a table")
-        self._resolve_toml_relative_paths(parsed, self._toml_base_dir(path, is_explicit))
-        return parsed, path
+        return parsed
 
-    def _extract_config_path(self, args: list[str]) -> tuple[str, bool]:
+    def _extract_config_path(self, args: list[str]) -> tuple[str | None, bool]:
         valid_keys = {"--job.config-file", "--job.config_file"}
         for i, arg in enumerate(args):
             if "=" in arg:
@@ -76,54 +78,7 @@ class ConfigManager:
                     return value, True
             elif i < len(args) - 1 and arg in valid_keys:
                 return args[i + 1], True
-        return str(self._default_config_path()), False
-
-    def _default_config_path(self) -> Path:
-        return Path(__file__).resolve().parent / "train_configs" / "small.toml"
-
-    def _toml_base_dir(self, config_path: Path, is_explicit: bool) -> Path:
-        if is_explicit:
-            return config_path.parent
-        return Path(__file__).resolve().parents[2]
-
-    def _resolve_toml_relative_paths(self, parsed: dict[str, Any], base_dir: Path) -> None:
-        path_fields = {
-            ("run", "log_dir"),
-            ("data", "snapshot_path"),
-            ("data", "plan_path"),
-        }
-        for section, field_name in path_fields:
-            section_data = parsed.get(section)
-            if not isinstance(section_data, dict):
-                continue
-            value = section_data.get(field_name)
-            if isinstance(value, str):
-                section_data[field_name] = str(self._resolve_path(value, base_dir))
-
-    def _normalize_paths(self, config: JobConfig, config_path: Path) -> JobConfig:
-        cwd = Path.cwd()
-        return replace(
-            config,
-            job=replace(
-                config.job,
-                config_file=str(config_path.resolve()),
-            ),
-            run=replace(
-                config.run,
-                log_dir=str(self._resolve_path(config.run.log_dir, cwd)),
-            ),
-            data=replace(
-                config.data,
-                snapshot_path=str(self._resolve_path(config.data.snapshot_path, cwd)),
-                plan_path=str(self._resolve_path(config.data.plan_path, cwd)),
-            ),
-        )
-
-    def _resolve_path(self, value: str, base_dir: Path) -> Path:
-        path = Path(value).expanduser()
-        if not path.is_absolute():
-            path = base_dir / path
-        return path.resolve()
+        return self.config_cls().job.config_file, False
 
     def _dict_to_dataclass(self, cls: Type[Any], data: dict[str, Any], path: str = "") -> Any:
         if not is_dataclass(cls):
