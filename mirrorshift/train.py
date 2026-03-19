@@ -34,6 +34,7 @@ from mirrorshift.runtime import (
     set_determinism,
 )
 from mirrorshift.run_manifest import create_run_artifacts, write_run_manifest
+from mirrorshift.run_manifest import discard_staged_run_artifacts, finalize_run_artifacts
 from mirrorshift.utils import get_lr_schedule
 
 BatchType = Tuple[torch.Tensor, torch.Tensor]
@@ -329,6 +330,7 @@ def main() -> int:
     base_device_type = resolve_device(config.training.device)
     runtime_context = build_runtime_context(base_device_type, config.parallelism)
     metrics_logger: MetricsLogger | None = None
+    artifacts = None
 
     try:
         if runtime_context.is_primary:
@@ -341,8 +343,7 @@ def main() -> int:
                 resolved_run_id=run_id,
                 write_files=True,
             )
-        barrier_if_distributed(runtime_context)
-        if not runtime_context.is_primary:
+        else:
             artifacts = create_run_artifacts(
                 config,
                 resolved_run_id=run_id,
@@ -386,6 +387,9 @@ def main() -> int:
             compile_config=config.compile,
         )
         model = materialize_initialized_model(model, runtime_context.device)
+        if runtime_context.is_primary and not artifacts.resumed:
+            artifacts = finalize_run_artifacts(artifacts)
+        barrier_if_distributed(runtime_context)
 
         opt = optim.AdamW(model.parameters(), lr=config.training.learning_rate)
         train_state = TrainState()
@@ -468,6 +472,8 @@ def main() -> int:
     finally:
         if metrics_logger is not None:
             metrics_logger.close()
+        if runtime_context.is_primary:
+            discard_staged_run_artifacts(artifacts)
         destroy_process_group_if_needed(runtime_context)
 
     if runtime_context.is_primary:

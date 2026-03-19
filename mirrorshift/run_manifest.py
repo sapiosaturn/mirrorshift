@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -37,6 +38,11 @@ class RunArtifacts:
     config_snapshot_path: Path
     manifest_path: Path
     resumed: bool
+    staging_dir: Path | None = None
+
+    @property
+    def staged(self) -> bool:
+        return self.staging_dir is not None
 
 
 def resolve_run_id(requested_run_id: str | None) -> str:
@@ -58,6 +64,7 @@ def create_run_artifacts(
 ) -> RunArtifacts:
     run_id = resolved_run_id or resolve_run_id(config.run.id)
     run_dir = Path(config.run.log_dir) / run_id
+    staging_dir = _staging_run_dir(run_dir)
 
     config_snapshot_path = run_dir / config.run.config_snapshot_file
     manifest_path = run_dir / config.run.manifest_file
@@ -81,13 +88,16 @@ def create_run_artifacts(
         )
     else:
         if write_files:
-            run_dir.mkdir(parents=True, exist_ok=False)
+            if run_dir.exists():
+                raise FileExistsError(f"Run directory already exists: {run_dir}")
+            if staging_dir.exists():
+                raise FileExistsError(f"Staging directory already exists: {staging_dir}")
+            staging_dir.parent.mkdir(parents=True, exist_ok=True)
+            staging_dir.mkdir(parents=False, exist_ok=False)
+            config_snapshot_path = staging_dir / config.run.config_snapshot_file
+            manifest_path = staging_dir / config.run.manifest_file
             write_json_immutable(config_snapshot_path, config.to_dict())
-        else:
-            if not run_dir.is_dir():
-                raise FileNotFoundError(f"Run directory does not exist: {run_dir}")
-            if not config_snapshot_path.is_file():
-                raise FileNotFoundError(f"Missing config snapshot: {config_snapshot_path}")
+        staging_dir = staging_dir if write_files else None
 
     return RunArtifacts(
         run_id=run_id,
@@ -95,7 +105,35 @@ def create_run_artifacts(
         config_snapshot_path=config_snapshot_path,
         manifest_path=manifest_path,
         resumed=resumed,
+        staging_dir=staging_dir,
     )
+
+
+def finalize_run_artifacts(artifacts: RunArtifacts) -> RunArtifacts:
+    if not artifacts.staged:
+        return artifacts
+    if artifacts.run_dir.exists():
+        raise FileExistsError(f"Run directory already exists: {artifacts.run_dir}")
+
+    staging_dir = artifacts.staging_dir
+    assert staging_dir is not None
+    staging_dir.rename(artifacts.run_dir)
+    return RunArtifacts(
+        run_id=artifacts.run_id,
+        run_dir=artifacts.run_dir,
+        config_snapshot_path=artifacts.run_dir / artifacts.config_snapshot_path.name,
+        manifest_path=artifacts.run_dir / artifacts.manifest_path.name,
+        resumed=artifacts.resumed,
+        staging_dir=None,
+    )
+
+
+def discard_staged_run_artifacts(artifacts: RunArtifacts | None) -> None:
+    if artifacts is None or not artifacts.staged:
+        return
+    staging_dir = artifacts.staging_dir
+    if staging_dir is not None and staging_dir.exists():
+        shutil.rmtree(staging_dir, ignore_errors=True)
 
 
 def write_run_manifest(
@@ -190,3 +228,7 @@ def _normalize_resume_value(key: str, value: Any, base_dir: Path) -> Any:
             path = base_dir / path
         return str(path.resolve())
     return value
+
+
+def _staging_run_dir(run_dir: Path) -> Path:
+    return run_dir.parent / f".{run_dir.name}.staging"

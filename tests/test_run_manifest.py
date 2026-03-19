@@ -5,6 +5,8 @@ import pytest
 from mirrorshift.config import CheckpointConfig, JobConfig, Run
 from mirrorshift.run_manifest import (
     create_run_artifacts,
+    discard_staged_run_artifacts,
+    finalize_run_artifacts,
     resolve_run_id,
     write_run_manifest,
 )
@@ -19,9 +21,12 @@ def test_create_run_artifacts_writes_config_snapshot(tmp_path) -> None:
     artifacts = create_run_artifacts(config)
 
     assert artifacts.run_dir == tmp_path / "unit-run"
+    assert artifacts.staged is True
+    assert artifacts.staging_dir == tmp_path / ".unit-run.staging"
     assert artifacts.config_snapshot_path.exists()
     assert not artifacts.manifest_path.exists()
     assert artifacts.resumed is False
+    assert not artifacts.run_dir.exists()
 
     payload = json.loads(artifacts.config_snapshot_path.read_text())
     assert payload["run"]["id"] == "unit-run"
@@ -30,14 +35,15 @@ def test_create_run_artifacts_writes_config_snapshot(tmp_path) -> None:
 
 def test_create_run_artifacts_fails_for_existing_run_id(tmp_path) -> None:
     config = JobConfig(run=Run(log_dir=str(tmp_path), id="repeatable"))
-    create_run_artifacts(config)
+    artifacts = create_run_artifacts(config)
+    finalize_run_artifacts(artifacts)
     with pytest.raises(FileExistsError):
         create_run_artifacts(config)
 
 
 def test_create_run_artifacts_reuses_existing_run_dir_for_resume(tmp_path) -> None:
     initial_config = JobConfig(run=Run(log_dir=str(tmp_path), id="resume-run"))
-    artifacts = create_run_artifacts(initial_config)
+    artifacts = finalize_run_artifacts(create_run_artifacts(initial_config))
     write_run_manifest(
         artifacts=artifacts,
         config=initial_config,
@@ -59,7 +65,7 @@ def test_create_run_artifacts_reuses_existing_run_dir_for_resume(tmp_path) -> No
 
 def test_create_run_artifacts_allows_resume_safe_config_drift(tmp_path) -> None:
     initial_config = JobConfig(run=Run(log_dir=str(tmp_path), id="resume-safe"))
-    artifacts = create_run_artifacts(initial_config)
+    artifacts = finalize_run_artifacts(create_run_artifacts(initial_config))
     write_run_manifest(
         artifacts=artifacts,
         config=initial_config,
@@ -97,7 +103,7 @@ def test_create_run_artifacts_allows_resume_safe_config_drift(tmp_path) -> None:
 
 def test_create_run_artifacts_rejects_resume_config_drift(tmp_path) -> None:
     initial_config = JobConfig(run=Run(log_dir=str(tmp_path), id="resume-drift"))
-    artifacts = create_run_artifacts(initial_config)
+    artifacts = finalize_run_artifacts(create_run_artifacts(initial_config))
     write_run_manifest(
         artifacts=artifacts,
         config=initial_config,
@@ -132,7 +138,7 @@ def test_create_run_artifacts_requires_fixed_run_id_for_resume(tmp_path) -> None
 
 def test_write_run_manifest_is_immutable(tmp_path) -> None:
     config = JobConfig(run=Run(log_dir=str(tmp_path), id="manifest-run"))
-    artifacts = create_run_artifacts(config)
+    artifacts = finalize_run_artifacts(create_run_artifacts(config))
     write_run_manifest(
         artifacts=artifacts,
         config=config,
@@ -161,3 +167,28 @@ def test_write_run_manifest_is_immutable(tmp_path) -> None:
             trainable_params=456,
             device="cpu",
         )
+
+
+def test_finalize_run_artifacts_promotes_staging_dir(tmp_path) -> None:
+    config = JobConfig(run=Run(log_dir=str(tmp_path), id="promote-run"))
+    artifacts = create_run_artifacts(config)
+
+    finalized = finalize_run_artifacts(artifacts)
+
+    assert finalized.staged is False
+    assert finalized.run_dir == tmp_path / "promote-run"
+    assert finalized.run_dir.is_dir()
+    assert finalized.config_snapshot_path == finalized.run_dir / "config.json"
+    assert finalized.config_snapshot_path.exists()
+    assert not (tmp_path / ".promote-run.staging").exists()
+
+
+def test_discard_staged_run_artifacts_allows_retry(tmp_path) -> None:
+    config = JobConfig(run=Run(log_dir=str(tmp_path), id="retry-run"))
+    first = create_run_artifacts(config)
+
+    discard_staged_run_artifacts(first)
+
+    second = create_run_artifacts(config)
+    assert second.staged is True
+    assert second.config_snapshot_path.exists()
