@@ -3,6 +3,8 @@ Experimental decoder-only transformer repo in PyTorch.
 
 Current focus is architecture experiments (GQA and MLA attention), a simple training loop, and local text generation sampling.
 
+Design-wise, this repo has taken some inspiration from [TorchTitan](https://github.com/pytorch/torchtitan) and [nmoe](https://github.com/Noumena-Network/nmoe).
+
 ## Repository Structure
 
 ```text
@@ -26,6 +28,8 @@ mirrorshift/
   config/
     train_configs/
       small.toml
+  docs/
+    experiment_flow.md
   datasets/
     example_train.parquet
     example_train_snapshot/
@@ -45,6 +49,7 @@ mirrorshift/
 - `mirrorshift/experiments/spec.py`: experiment contract (`TrainSpec`) for model/data/loss composition.
 - `mirrorshift/experiments/default.py`: default causal LM experiment wiring.
 - `mirrorshift/config/train_configs/small.toml`: default unified run/model/training config.
+- `docs/experiment_flow.md`: minimal end-to-end preprocessing, training, resume, and distributed launch flow.
 - `mirrorshift/datasets/example_train.parquet`: sample parquet source corpus for preprocessing examples.
 - `mirrorshift/datasets/example_train_snapshot/`: tracked preprocessed snapshot used by the default training config.
 - `mirrorshift/datasets/example_train_plan_ctx64/`: tracked sequence plan for `context_length = 64`.
@@ -64,14 +69,26 @@ This installs both workspace packages:
 - `mirrorshift`
 - `mirrordata`
 
+## Typical Flow
+
+The normal workflow is:
+
+1. preprocess parquet into a `mirrordata` snapshot
+2. build a sequence plan for the target context length
+3. verify the artifacts
+4. train `mirrorshift` against `data.snapshot_path` + `data.plan_path`
+5. resume with the same `run.id` if needed
+
+The concise version is documented in [docs/experiment_flow.md](docs/experiment_flow.md).
+
 ## Training
 
 ### Package CLI
 
 ```bash
-mirrorshift-train --job.config_file mirrorshift/config/train_configs/small.toml \
-                  --training.max_steps 100 \
-                  --training.log_every 10
+uv run mirrorshift-train --job.config_file mirrorshift/config/train_configs/small.toml \
+                         --training.max_steps 100 \
+                         --training.log_every 10
 ```
 
 The default config already points at prebuilt `mirrordata` artifacts.
@@ -81,7 +98,7 @@ The default config already points at prebuilt `mirrordata` artifacts.
 Build a snapshot from parquet:
 
 ```bash
-mirrordata prep-parquet mirrorshift/datasets/example_train.parquet \
+uv run mirrordata prep-parquet mirrorshift/datasets/example_train.parquet \
   --output-dir /tmp/example-train-snapshot \
   --snapshot-id example-train \
   --dataset-name example-train
@@ -90,7 +107,7 @@ mirrordata prep-parquet mirrorshift/datasets/example_train.parquet \
 Build a plan for a specific context length:
 
 ```bash
-mirrordata build-plan \
+uv run mirrordata build-plan \
   --snapshot-path /tmp/example-train-snapshot \
   --output-dir /tmp/example-train-plan-ctx64 \
   --sequence-length 64
@@ -99,7 +116,7 @@ mirrordata build-plan \
 Verify the resulting artifacts:
 
 ```bash
-mirrordata verify \
+uv run mirrordata verify \
   --snapshot-path /tmp/example-train-snapshot \
   --plan-path /tmp/example-train-plan-ctx64
 ```
@@ -107,18 +124,18 @@ mirrordata verify \
 ### Module Run
 
 ```bash
-python3 -m mirrorshift.train --job.config_file mirrorshift/config/train_configs/small.toml \
-                             --training.max_steps 100 \
-                             --data.snapshot_path /tmp/example-train-snapshot \
-                             --data.plan_path /tmp/example-train-plan-ctx64
+uv run python -m mirrorshift.train --job.config_file mirrorshift/config/train_configs/small.toml \
+                                   --training.max_steps 100 \
+                                   --data.snapshot_path /tmp/example-train-snapshot \
+                                   --data.plan_path /tmp/example-train-plan-ctx64
 ```
 
 ## Monitoring
 
 ```bash
-mirrorshift-train --job.config_file mirrorshift/config/train_configs/small.toml \
-                  --run.wandb_mode online \
-                  --run.wandb_project mirrorshift
+uv run mirrorshift-train --job.config_file mirrorshift/config/train_configs/small.toml \
+                         --run.wandb_mode online \
+                         --run.wandb_project mirrorshift
 ```
 
 ## Run Artifacts
@@ -129,11 +146,13 @@ Each training invocation creates an immutable run directory:
 runs/<run_id>/
   config.json
   manifest.json
+  checkpoints/
 ```
 
 - `config.json`: resolved dataclass config snapshot.
 - `manifest.json`: run metadata (snapshot/plan paths, device, params, argv, paths).
-- metrics: logged to Weights & Biases.
+- `checkpoints/`: optional DCP checkpoints when checkpointing is enabled.
+- metrics: logged to Weights & Biases from the primary rank.
 
 Set a fixed run id with `--run.id <name>` or let mirrorshift auto-generate one.
 
@@ -163,5 +182,6 @@ model = CausalTransformer(model_config=config)
 
 ## Notes
 
-- There is currently no distributed training module in this repository.
+- `training.batch_size` is the global batch size.
+- Distributed launch uses `torchrun`, and `WORLD_SIZE` must equal `dp_replicate * dp_shard`.
 - This project is intended for CUDA-focused development; CPU fallback exists but will be slower.
