@@ -3,12 +3,31 @@
 import json
 import os
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from mirrorshift.config import JobConfig
+
+RESUME_ALLOWED_CONFIG_DIFFS = {
+    "checkpoint.enable",
+    "checkpoint.interval",
+    "checkpoint.keep_latest_k",
+    "checkpoint.load_step",
+    "job.config_file",
+    "run.wandb_entity",
+    "run.wandb_mode",
+    "run.wandb_project",
+    "training.log_every",
+    "training.max_steps",
+}
+_COMPARE_PATH_FIELDS = {
+    "data.plan_path",
+    "data.snapshot_path",
+    "run.log_dir",
+}
 
 
 @dataclass(frozen=True)
@@ -55,6 +74,11 @@ def create_run_artifacts(
             )
         if not manifest_path.is_file():
             raise FileNotFoundError(f"Missing run manifest for resume run: {manifest_path}")
+        _validate_resume_config(
+            requested_config=config,
+            config_snapshot_path=config_snapshot_path,
+            manifest_path=manifest_path,
+        )
     else:
         if write_files:
             run_dir.mkdir(parents=True, exist_ok=False)
@@ -109,3 +133,60 @@ def write_run_manifest(
         "cwd": str(Path.cwd()),
     }
     write_json_immutable(artifacts.manifest_path, payload)
+
+
+def _validate_resume_config(
+    *,
+    requested_config: JobConfig,
+    config_snapshot_path: Path,
+    manifest_path: Path,
+) -> None:
+    saved_config = json.loads(config_snapshot_path.read_text())
+    if not isinstance(saved_config, dict):
+        raise ValueError(f"Invalid saved config snapshot: {config_snapshot_path}")
+    manifest_payload = json.loads(manifest_path.read_text())
+    if not isinstance(manifest_payload, dict):
+        raise ValueError(f"Invalid saved run manifest: {manifest_path}")
+
+    saved_flat = _flatten_dict(saved_config)
+    current_flat = _flatten_dict(requested_config.to_dict())
+    saved_base_dir = Path(str(manifest_payload.get("cwd", Path.cwd())))
+    current_base_dir = Path.cwd()
+
+    mismatches: list[str] = []
+    for key in sorted(set(saved_flat) | set(current_flat)):
+        if key in RESUME_ALLOWED_CONFIG_DIFFS:
+            continue
+        saved_value = _normalize_resume_value(key, saved_flat.get(key), saved_base_dir)
+        current_value = _normalize_resume_value(key, current_flat.get(key), current_base_dir)
+        if saved_value != current_value:
+            mismatches.append(f"{key}: saved={saved_value!r} requested={current_value!r}")
+
+    if mismatches:
+        details = "; ".join(mismatches[:8])
+        if len(mismatches) > 8:
+            details += f"; ... and {len(mismatches) - 8} more"
+        raise ValueError(
+            "Resume config drift is not allowed outside the explicit allowlist. "
+            f"Mismatches: {details}"
+        )
+
+
+def _flatten_dict(data: Mapping[str, Any], prefix: str = "") -> dict[str, Any]:
+    flattened: dict[str, Any] = {}
+    for key, value in data.items():
+        dotted_key = f"{prefix}.{key}" if prefix else key
+        if isinstance(value, Mapping):
+            flattened.update(_flatten_dict(value, dotted_key))
+        else:
+            flattened[dotted_key] = value
+    return flattened
+
+
+def _normalize_resume_value(key: str, value: Any, base_dir: Path) -> Any:
+    if key in _COMPARE_PATH_FIELDS and isinstance(value, str):
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            path = base_dir / path
+        return str(path.resolve())
+    return value

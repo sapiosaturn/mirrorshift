@@ -57,6 +57,70 @@ def test_create_run_artifacts_reuses_existing_run_dir_for_resume(tmp_path) -> No
     assert resumed_artifacts.resumed is True
 
 
+def test_create_run_artifacts_allows_resume_safe_config_drift(tmp_path) -> None:
+    initial_config = JobConfig(run=Run(log_dir=str(tmp_path), id="resume-safe"))
+    artifacts = create_run_artifacts(initial_config)
+    write_run_manifest(
+        artifacts=artifacts,
+        config=initial_config,
+        dataset_size=123,
+        trainable_params=456,
+        device="cpu",
+    )
+
+    resumed_config = JobConfig(
+        run=Run(
+            log_dir=str(tmp_path),
+            id="resume-safe",
+            wandb_mode="offline",
+        ),
+        training=initial_config.training.__class__(
+            **{
+                **initial_config.training.__dict__,
+                "max_steps": 777,
+                "log_every": 3,
+            }
+        ),
+        checkpoint=CheckpointConfig(
+            enable=True,
+            interval=20,
+            keep_latest_k=5,
+            load_step=-1,
+        ),
+    )
+
+    resumed_artifacts = create_run_artifacts(resumed_config)
+
+    assert resumed_artifacts.run_dir == artifacts.run_dir
+    assert resumed_artifacts.resumed is True
+
+
+def test_create_run_artifacts_rejects_resume_config_drift(tmp_path) -> None:
+    initial_config = JobConfig(run=Run(log_dir=str(tmp_path), id="resume-drift"))
+    artifacts = create_run_artifacts(initial_config)
+    write_run_manifest(
+        artifacts=artifacts,
+        config=initial_config,
+        dataset_size=123,
+        trainable_params=456,
+        device="cpu",
+    )
+
+    resumed_config = JobConfig(
+        run=Run(log_dir=str(tmp_path), id="resume-drift"),
+        model=initial_config.model.__class__(
+            **{
+                **initial_config.model.__dict__,
+                "num_layers": initial_config.model.num_layers + 1,
+            }
+        ),
+        checkpoint=CheckpointConfig(enable=True, load_step=-1),
+    )
+
+    with pytest.raises(ValueError, match="Resume config drift"):
+        create_run_artifacts(resumed_config)
+
+
 def test_create_run_artifacts_requires_fixed_run_id_for_resume(tmp_path) -> None:
     config = JobConfig(
         run=Run(log_dir=str(tmp_path), id=None),

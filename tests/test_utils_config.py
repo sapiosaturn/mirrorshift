@@ -35,6 +35,9 @@ def test_config_manager_uses_default_toml_file() -> None:
     assert config.training.max_steps == 500
     assert config.debug.seed is None
     assert config.debug.deterministic is False
+    assert Path(config.job.config_file).is_absolute()
+    assert Path(config.data.snapshot_path).is_absolute()
+    assert Path(config.data.plan_path).is_absolute()
 
 
 def test_config_manager_reads_current_sys_argv(monkeypatch, tmp_path: Path) -> None:
@@ -56,6 +59,16 @@ def test_config_manager_reads_current_sys_argv(monkeypatch, tmp_path: Path) -> N
     config = ConfigManager().parse_args()
 
     assert config.training.max_steps == 9
+
+
+def test_config_manager_uses_default_toml_outside_repo_cwd(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    config = ConfigManager().parse_args([])
+
+    assert Path(config.job.config_file).is_file()
+    assert Path(config.data.snapshot_path).exists()
+    assert Path(config.data.plan_path).exists()
 
 
 def test_config_manager_cli_overrides_toml(tmp_path: Path) -> None:
@@ -196,6 +209,7 @@ def test_config_manager_parses_data_toml_and_cli(tmp_path: Path) -> None:
             """
         )
     )
+    original_cwd = Path.cwd()
     config = ConfigManager().parse_args(
         [
             f"--job.config_file={config_path}",
@@ -203,8 +217,29 @@ def test_config_manager_parses_data_toml_and_cli(tmp_path: Path) -> None:
         ]
     )
 
-    assert config.data.snapshot_path == "snapshot-root"
-    assert config.data.plan_path == "plan-root"
+    assert config.data.snapshot_path == str((tmp_path / "snapshot-root").resolve())
+    assert config.data.plan_path == str((original_cwd / "plan-root").resolve())
+
+
+def test_config_manager_resolves_run_log_dir_relative_to_toml(tmp_path: Path, monkeypatch) -> None:
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    config_path = config_dir / "run.toml"
+    config_path.write_text(
+        dedent(
+            """
+            [run]
+            log_dir = "../alt-runs"
+            """
+        )
+    )
+    other_cwd = tmp_path / "other-cwd"
+    other_cwd.mkdir()
+    monkeypatch.chdir(other_cwd)
+
+    config = ConfigManager().parse_args([f"--job.config_file={config_path}"])
+
+    assert config.run.log_dir == str((tmp_path / "alt-runs").resolve())
 
 
 def test_config_manager_parses_checkpoint_toml_and_cli(tmp_path: Path) -> None:
